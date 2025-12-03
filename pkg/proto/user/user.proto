@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package user;
+
+option go_package = "github.com/DanieleT25/FlightData-Manager/pkg/proto/user";
+
+service UserService {
+    rpc VerifyCredentials (VerifyCredentialsRequest) returns (VerifyCredentialsResponse);
+    rpc CheckUserExistence (UserExistenceRequest) returns (UserExistenceResponse);
+}
+
+message VerifyCredentialsRequest {
+    string email = 1;
+    string password = 2;
+}
+
+message VerifyCredentialsResponse {
+    bool valid = 1;
+}
+
+message UserExistenceRequest {
+    string email = 1;
+}
+
+message UserExistenceResponse {
+    bool exists = 1;
+}
