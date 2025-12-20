@@ -89,7 +89,7 @@ REDIS_DB=0
 
 ### 3. Generate Certificates (mTLS)
 
-Before running, generate the TLS certificates for internal gRPC communication:
+Before running, generate the TLS certificates for internal gRPC communication and https:
 
 ```bash
 chmod +x pkg/scripts/gen_certs.sh
@@ -104,55 +104,15 @@ Build and start all containers using Docker Compose:
 docker-compose up --build
 ```
 
-The system will be available via the **API Gateway (Nginx)** at `http://localhost:80`.
+The system will be available via the **API Gateway (Nginx)** at `https://localhost:3443`.
 
------
 
 ## Testing the API
 
-  * **User Manager Docs:** http://localhost/docs/user
-  * **Data Collector Docs:** http://localhost/docs/data
+  * **User Manager Docs:** https://localhost:3443/docs/user
+  * **Data Collector Docs:** https://localhost:3443/docs/data
 
-### Quick Scenarios (using Restish)
-
-#### 1. Register a User (Idempotent)
-
-```bash
-restish POST http://localhost/users \
-  -H "Content-Type: application/json" \
-  -H "X-Request-ID: 101" \
-  '{
-    "email": "mario@test.it",
-    "password": "Password123!",
-    "first_name": "Mario",
-    "last_name": "Rossi",
-    "card_number": "1234567812345678",
-    "expiration_date": "12/30",
-    "cvv": "123"
-  }'
-```
-
-![System Architecture Diagram](assets/RegisterUser.png)
-
-#### 2. Register Interest (requires User verification)
-
-```bash
-restish POST http://localhost/interests \
-  -H "Content-Type: application/json" \
-  '{
-    "user_email": "mario@test.it",
-    "password": "Password123!",
-    "airport_codes": ["LICC", "LICJ"]
-  }'
-```
-
-![System Architecture Diagram](assets/RegisterInterest.png)
-
-#### 3. Get Flight Data (after \~12h or forced restart)
-
-```bash
-restish GET 'http://localhost/airports/LIRF/flights?email=mario@test.it&password=Password123!&limit=5'
-```
+You can see a quick scenario in `docs/demo.md`.
 
 ## Development & Debugging
 
@@ -169,7 +129,7 @@ restish GET 'http://localhost/airports/LIRF/flights?email=mario@test.it&password
 >  neo4j:
 >  	...
 >    #ports:
->    #  - "7474:7474" # Browser UI (http://localhost:7474)
+>    #  - "7474:7474" # Browser UI
 >    #  - "7687:7687"
 >    ...
 >  ```

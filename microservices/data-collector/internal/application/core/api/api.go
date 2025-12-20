@@ -15,45 +15,37 @@ type Application struct {
 	db         ports.FlightRepository
 	userClient ports.UserManagerClient
 	openSky    ports.OpenSkyClient
+	producer   ports.EventProducer
 	interval   time.Duration
 }
 
-func NewApplication(db ports.FlightRepository, userClient ports.UserManagerClient, openSky ports.OpenSkyClient, interval time.Duration) *Application {
+func NewApplication(db ports.FlightRepository, userClient ports.UserManagerClient, openSky ports.OpenSkyClient, producer ports.EventProducer, interval time.Duration) *Application {
 	return &Application{
 		db:         db,
 		userClient: userClient,
 		openSky:    openSky,
+		producer:   producer,
 		interval:   interval,
 	}
 }
 
-func (a *Application) SetUserInterests(ctx context.Context, email, password string, airportCodes []string) error {
-	if len(airportCodes) == 0 {
-		return fmt.Errorf("%w: airport list cannot be empty", apperrors.ErrInvalidInput)
-	}
-
-	cleanCodes := make([]string, 0, len(airportCodes))
-	for _, code := range airportCodes {
-		interest, err := domain.NewInterest(email, code)
-		if err != nil {
-			return fmt.Errorf("%w: %v", apperrors.ErrInvalidInput, err)
-		}
-		email = interest.UserEmail
-		cleanCodes = append(cleanCodes, interest.AirportCode)
+func (a *Application) SetUserInterests(ctx context.Context, email, password string, interests []domain.Interest) error {
+	if len(interests) == 0 {
+		return fmt.Errorf("%w: interests list cannot be empty", apperrors.ErrInvalidInput)
 	}
 
 	if err := a.verifyUserCredentials(ctx, email, password); err != nil {
 		return err
 	}
 
-	if err := a.db.SetInterests(ctx, email, cleanCodes); err != nil {
+	if err := a.db.SetInterests(ctx, email, interests); err != nil {
 		return fmt.Errorf("%w: %v", apperrors.ErrDbOperation, err)
 	}
 
 	return nil
 }
 
-func (a *Application) GetUserInterests(ctx context.Context, email, password string) ([]string, error) {
+func (a *Application) GetUserInterests(ctx context.Context, email, password string) ([]domain.Interest, error) {
 	if err := a.verifyUserCredentials(ctx, email, password); err != nil {
 		return nil, err
 	}

@@ -10,14 +10,6 @@ func GetServerPort() string {
 	return getEnvironmentValue("SERVER_PORT")
 }
 
-func GetEnv() string {
-	val := os.Getenv("ENV")
-	if val == "" {
-		return "development"
-	}
-	return val
-}
-
 func GetNeo4jURI() string {
 	return getEnvironmentValue("NEO4J_URI")
 }
@@ -32,6 +24,14 @@ func GetUserManagerHost() string {
 
 func GetOpenSkyAuth() (string, string) {
 	return os.Getenv("OPENSKY_USER"), os.Getenv("OPENSKY_PASSWORD")
+}
+
+func GetKafkaBroker() string {
+	return getEnvironmentValue("KAFKA_BROKER")
+}
+
+func GetKafkaTopic() string {
+	return getEnvironmentValue("KAFKA_TOPIC")
 }
 
 func getEnvironmentValue(key string) string {

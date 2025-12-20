@@ -55,7 +55,7 @@ func NewUserClientAdapter(serverAddr string) (*UserClientAdapter, error) {
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(tlsCreds),
 		grpc.WithChainUnaryInterceptor(
-			CircuitBreakerClientInterceptor(cb),
+			circuitBreakerClientInterceptor(cb),
 			grpc_retry.UnaryClientInterceptor(retryOpts...),
 		),
 	}
@@ -78,27 +78,8 @@ func (a *UserClientAdapter) VerifyCredentials(ctx context.Context, email, passwo
 	}
 
 	resp, err := a.client.VerifyCredentials(ctx, req)
-
 	if err != nil {
-		st, ok := status.FromError(err)
-		if !ok {
-			return false, fmt.Errorf("%w: %v", apperrors.ErrExternalService, err)
-		}
-
-		for _, detail := range st.Details() {
-			if t, ok := detail.(*errdetails.BadRequest); ok {
-				return false, fmt.Errorf("%w: validation failed on %v", apperrors.ErrInvalidInput, t.FieldViolations)
-			}
-		}
-
-		switch st.Code() {
-		case codes.InvalidArgument:
-			return false, fmt.Errorf("%w: remote validation failed", apperrors.ErrInvalidInput)
-		case codes.Unavailable, codes.Internal:
-			return false, fmt.Errorf("%w: user manager unavailable", apperrors.ErrExternalService)
-		default:
-			return false, fmt.Errorf("%w: grpc error %s", apperrors.ErrExternalService, st.Code())
-		}
+		return false, handleGrpcError(err)
 	}
 
 	return resp.Valid, nil
@@ -111,26 +92,35 @@ func (a *UserClientAdapter) CheckUserExistence(ctx context.Context, email string
 	req := &pb.UserExistenceRequest{Email: email}
 
 	resp, err := a.client.CheckUserExistence(ctx, req)
-
 	if err != nil {
-		st, ok := status.FromError(err)
-		if !ok {
-			return false, fmt.Errorf("%w: %v", apperrors.ErrExternalService, err)
-		}
-
-		switch st.Code() {
-		case codes.InvalidArgument:
-			return false, fmt.Errorf("%w: remote validation failed - %s", apperrors.ErrInvalidInput, st.Message())
-
-		case codes.Unavailable, codes.Internal:
-			return false, fmt.Errorf("%w: user manager unavailable - %s", apperrors.ErrExternalService, st.Message())
-
-		default:
-			return false, fmt.Errorf("%w: grpc error %s - %s", apperrors.ErrExternalService, st.Code(), st.Message())
-		}
+		return false, handleGrpcError(err)
 	}
 
 	return resp.Exists, nil
+}
+
+func handleGrpcError(err error) error {
+	st, ok := status.FromError(err)
+	if !ok {
+		return fmt.Errorf("%w: %v", apperrors.ErrExternalService, err)
+	}
+
+	for _, detail := range st.Details() {
+		if t, ok := detail.(*errdetails.BadRequest); ok {
+			return fmt.Errorf("%w: validation failed on %v", apperrors.ErrInvalidInput, t.FieldViolations)
+		}
+	}
+
+	switch st.Code() {
+	case codes.InvalidArgument:
+		return fmt.Errorf("%w: remote validation failed - %s", apperrors.ErrInvalidInput, st.Message())
+
+	case codes.Unavailable, codes.Internal:
+		return fmt.Errorf("%w: user manager unavailable - %s", apperrors.ErrExternalService, st.Message())
+
+	default:
+		return fmt.Errorf("%w: grpc error %s - %s", apperrors.ErrExternalService, st.Code(), st.Message())
+	}
 }
 
 func loadClientTLSCredentials() (credentials.TransportCredentials, error) {

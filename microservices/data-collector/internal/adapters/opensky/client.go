@@ -14,6 +14,7 @@ import (
 )
 
 const (
+	// apiBaseURL = "https://pippo.xyz/api"
 	apiBaseURL = "https://opensky-network.org/api"
 	authURL    = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token"
 )
@@ -23,6 +24,7 @@ type OpenSkyClient struct {
 	clientSecret string
 	client       *http.Client
 	token        string
+	cb           *CircuitBreaker
 }
 
 type authResponse struct {
@@ -30,10 +32,13 @@ type authResponse struct {
 }
 
 func NewOpenSkyClient(clientID, clientSecret string) *OpenSkyClient {
+	cb := NewCircuitBreaker(3, 30*time.Second)
+
 	return &OpenSkyClient{
 		clientID:     clientID,
 		clientSecret: clientSecret,
 		client:       &http.Client{Timeout: 60 * time.Second},
+		cb:           cb,
 	}
 }
 
@@ -70,7 +75,7 @@ func (o *OpenSkyClient) authenticate(ctx context.Context) error {
 }
 
 func (o *OpenSkyClient) fetchFlights(ctx context.Context, apiURL string, flightType string) ([]domain.Flight, error) {
-	doRequest := func() (*http.Response, error) {
+	executeRequest := func() (any, error) {
 		req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 		if err != nil {
 			return nil, err
@@ -85,39 +90,53 @@ func (o *OpenSkyClient) fetchFlights(ctx context.Context, apiURL string, flightT
 			req.Header.Set("Authorization", "Bearer "+o.token)
 		}
 
-		return o.client.Do(req)
-	}
-
-	resp, err := doRequest()
-	if err != nil {
-		return nil, fmt.Errorf("%w: request failed: %v", apperrors.ErrExternalService, err)
-	}
-
-	if resp.StatusCode == http.StatusUnauthorized && o.clientID != "" {
-		resp.Body.Close()
-
-		if err := o.authenticate(ctx); err != nil {
-			return nil, fmt.Errorf("%w: token refresh failed: %v", apperrors.ErrExternalService, err)
-		}
-
-		resp, err = doRequest()
+		resp, err := o.client.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("%w: retry request failed: %v", apperrors.ErrExternalService, err)
+			return nil, fmt.Errorf("%w: request failed: %v", apperrors.ErrExternalService, err)
 		}
-	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNotFound {
-		return []domain.Flight{}, nil
+		if resp.StatusCode == http.StatusUnauthorized && o.clientID != "" {
+			resp.Body.Close()
+			if err := o.authenticate(ctx); err != nil {
+				return nil, fmt.Errorf("%w: token refresh failed: %v", apperrors.ErrExternalService, err)
+			}
+			req.Header.Set("Authorization", "Bearer "+o.token)
+			resp, err = o.client.Do(req)
+			if err != nil {
+				return nil, fmt.Errorf("%w: retry request failed: %v", apperrors.ErrExternalService, err)
+			}
+		}
+
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusNotFound {
+			return []domain.Flight{}, nil
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("%w: opensky returned status %d", apperrors.ErrExternalService, resp.StatusCode)
+		}
+
+		var flights []domain.Flight
+		if err := json.NewDecoder(resp.Body).Decode(&flights); err != nil {
+			return nil, fmt.Errorf("%w: failed to decode json: %v", apperrors.ErrExternalService, err)
+		}
+
+		return flights, nil
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: opensky returned status %d", apperrors.ErrExternalService, resp.StatusCode)
+	result, err := o.cb.Execute(executeRequest)
+
+	if err != nil {
+		if err == ErrCircuitOpen {
+			return nil, fmt.Errorf("%w: circuit breaker open", apperrors.ErrExternalService)
+		}
+		return nil, err
 	}
 
-	var flights []domain.Flight
-	if err := json.NewDecoder(resp.Body).Decode(&flights); err != nil {
-		return nil, fmt.Errorf("%w: failed to decode json: %v", apperrors.ErrExternalService, err)
+	flights, ok := result.([]domain.Flight)
+	if !ok {
+		return nil, fmt.Errorf("internal error: unexpected response type")
 	}
 
 	for i := range flights {

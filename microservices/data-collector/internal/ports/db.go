@@ -7,8 +7,8 @@ import (
 )
 
 type FlightRepository interface {
-	SetInterests(ctx context.Context, email string, airportCodes []string) error
-	GetInterests(ctx context.Context, email string) ([]string, error)
+	SetInterests(ctx context.Context, email string, interests []domain.Interest) error
+	GetInterests(ctx context.Context, email string) ([]domain.Interest, error)
 	IsUserInterested(ctx context.Context, email string, airportCode string) (bool, error)
 	GetFlights(ctx context.Context, airportCode string, limit int) ([]domain.Flight, error)
 	GetLastFlight(ctx context.Context, airportCode string, direction string) (*domain.Flight, error)

@@ -35,14 +35,6 @@ func GetGRPCPort() string {
 	return getEnvironmentValue("GRPC_PORT")
 }
 
-func GetEnv() string {
-	val := os.Getenv("ENV")
-	if val == "" {
-		return "development"
-	}
-	return val
-}
-
 func getEnvironmentValue(key string) string {
 	if os.Getenv(key) == "" {
 		log.Fatalf("%s environment variable is missing.", key)

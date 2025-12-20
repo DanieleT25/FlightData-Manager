@@ -1,20 +1,34 @@
-version: "3.8"
+x-common-service: &common-service
+  restart: unless-stopped
+
+x-neo4j-env: &neo4j-env
+  NEO4J_URI: bolt://neo4j:7687
+  NEO4J_USER: ${NEO4J_USER}
+  NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+
+x-kafka-env: &kafka-env
+  KAFKA_BROKER: kafka:9092
 
 services:
   nginx:
+    <<: *common-service
     image: nginx:alpine
     container_name: gateway
     ports:
-      - "80:80"
+      - "3080:80"
+      - "3443:443"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./pkg/certs/nginx-cert.pem:/etc/nginx/certs/nginx-cert.pem:ro
+      - ./pkg/certs/nginx-key.pem:/etc/nginx/certs/nginx-key.pem:ro
     depends_on:
       - user-manager
       - data-collector
     networks:
-      - public-net
+      - gateway-net
 
   redis:
+    <<: *common-service
     image: redis:alpine
     container_name: redis
     expose:
@@ -30,6 +44,7 @@ services:
       - user-net
 
   user-manager:
+    <<: *common-service
     container_name: user-manager
     build:
       context: .
@@ -38,12 +53,11 @@ services:
       - "8080"
       - "50051"
     environment:
-      - REDIS_ADDR=${REDIS_ADDR}
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
-      - REDIS_DB=${REDIS_DB}
-      - SERVER_PORT=8080
-      - GRPC_PORT=50051
-      - ENV=development
+      REDIS_ADDR: ${REDIS_ADDR}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_DB: ${REDIS_DB}
+      SERVER_PORT: 8080
+      GRPC_PORT: 50051
     volumes:
       - ./pkg/certs:/certs:ro
     healthcheck:
@@ -55,20 +69,21 @@ services:
       redis:
         condition: service_healthy
     networks:
-      - public-net
+      - gateway-net
       - service-net
       - user-net
 
   neo4j:
+    <<: *common-service
     image: neo4j:5.15-community
     container_name: neo4j
-    #ports:
-    #  - "7474:7474" # Browser UI (http://localhost:7474)
-    #  - "7687:7687"
+    ports:
+     - "7474:7474" # Browser UI
+     - "7687:7687"
     expose:
       - "7687"
     environment:
-      - NEO4J_AUTH=${NEO4J_USER}/${NEO4J_PASSWORD}
+      NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
     volumes:
       - neo4j_data:/data
     healthcheck:
@@ -80,6 +95,7 @@ services:
       - data-net
 
   data-collector:
+    <<: *common-service
     container_name: data-collector
     build:
       context: .
@@ -87,15 +103,13 @@ services:
     expose:
       - "8080"
     environment:
-      - SERVER_PORT=8080
-      - ENV=development
-      - NEO4J_URI=bolt://neo4j:7687
-      - NEO4J_USER=${NEO4J_USER}
-      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
-      - USER_MANAGER_GRPC_HOST=user-manager:50051
-      - OPENSKY_USER=${OPENSKY_USER}
-      - OPENSKY_PASSWORD=${OPENSKY_PASSWORD}
-      - COLLECTION_INTERVAL=12h
+      <<: [*neo4j-env, *kafka-env]
+      SERVER_PORT: 8080
+      USER_MANAGER_GRPC_HOST: user-manager:50051
+      OPENSKY_USER: ${OPENSKY_USER}
+      OPENSKY_PASSWORD: ${OPENSKY_PASSWORD}
+      COLLECTION_INTERVAL: 12h
+      KAFKA_TOPIC: to-alert-system
     volumes:
       - ./pkg/certs:/certs:ro
     healthcheck:
@@ -108,13 +122,96 @@ services:
         condition: service_healthy
       user-manager:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
     networks:
-      - public-net
+      - gateway-net
       - service-net
       - data-net
 
+  alert-system:
+    <<: *common-service
+    container_name: alert-system
+    build:
+      context: .
+      dockerfile: microservices/alert-system/Dockerfile
+    environment:
+      <<: [*neo4j-env, *kafka-env]
+      KAFKA_TOPIC_INPUT: to-alert-system
+      KAFKA_TOPIC_OUTPUT: to-notifier
+      KAFKA_GROUP_ID: alert-system-group
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - data-net
+      - service-net
+
+  alert-notifier-system:
+    <<: *common-service
+    container_name: alert-notifier-system
+    build:
+      context: .
+      dockerfile: microservices/alert-notifier-system/Dockerfile
+    environment:
+      <<: *kafka-env
+      KAFKA_TOPIC: to-notifier
+      KAFKA_GROUP_ID: alert-notifier-system-group
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - service-net
+
+  kafka:
+    <<: *common-service
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    ports:
+      - "29092:29092" # debug
+    environment:
+      # --- KRaft single node ---
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_NODE_ID: 1
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      
+      # --- Listener & advertised ---
+      # PLAINTEXT: porta 9092 per i container docker (es. data-collector)
+      # PLAINTEXT_HOST: porta 29092 per l'host (il tuo PC)
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      
+      # --- Single-node defaults ---
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+      # -- Topic defaults ---
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 3
+
+      # --- Data ---
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: nc -z localhost 9092 || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - service-net
+
 networks:
-  public-net:
+  gateway-net:
     driver: bridge
   service-net:
     driver: bridge
@@ -126,3 +223,4 @@ networks:
 volumes:
   redis_data:
   neo4j_data:
+  kafka_data:

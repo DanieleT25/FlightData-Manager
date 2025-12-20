@@ -20,75 +20,6 @@ func NewAPIHandler(app ports.CollectorAPI) *APIHandler {
 	return &APIHandler{app: app}
 }
 
-type SetInterestsInput struct {
-	Body struct {
-		UserEmail    string   `json:"user_email" doc:"User email" example:"mario.rossi@email.it" required:"true"`
-		Password     string   `json:"password" doc:"User password for verification" required:"true"`
-		AirportCodes []string `json:"airport_codes" doc:"List of ICAO codes" example:"[\"LICC\", \"LIRF\"]" required:"true" minItems:"1"`
-	}
-}
-
-type AuthQueryInput struct {
-	UserEmail string `query:"email" doc:"User email" required:"true"`
-	Password  string `query:"password" doc:"User password" required:"true"`
-}
-
-type FlightRequestInput struct {
-	AuthQueryInput
-	AirportCode string `path:"code" doc:"ICAO Airport Code" example:"LICC"`
-	Direction   string `query:"direction" doc:"'arrival' or 'departure'" default:"departure"`
-	Limit       int    `query:"limit" doc:"Max number of flights to return" default:"10"`
-}
-
-type StatsRequestInput struct {
-	AuthQueryInput
-	AirportCode string `path:"code"`
-	Direction   string `query:"direction" default:"departure"`
-	Days        int    `query:"days" default:"7"`
-}
-
-type SetInterestsOutput struct {
-	Body struct {
-		Message string `json:"message" example:"Interests updated successfully"`
-	}
-}
-
-type InterestsOutput struct {
-	Body struct {
-		AirportCodes []string `json:"tracked_airports"`
-	}
-}
-
-type SingleFlightOutput struct {
-	Body struct {
-		Flight FlightResponse `json:"flight"`
-	}
-}
-
-type FlightListOutput struct {
-	Body struct {
-		Flights []FlightResponse `json:"flights"`
-	}
-}
-
-type StatsOutput struct {
-	Body struct {
-		Airport        string  `json:"airport"`
-		Direction      string  `json:"direction"`
-		AverageFlights float64 `json:"average_daily_flights"`
-	}
-}
-
-type FlightResponse struct {
-	ICAO24              string    `json:"icao24"`
-	FirstSeen           time.Time `json:"firstSeen" doc:"Departure time (ISO 8601)"`
-	LastSeen            time.Time `json:"lastSeen" doc:"Arrival time (ISO 8601)"`
-	EstDepartureAirport string    `json:"estDepartureAirport"`
-	EstArrivalAirport   string    `json:"estArrivalAirport"`
-	Callsign            string    `json:"callsign"`
-	Type                string    `json:"type"`
-}
-
 func mapToResponse(f *domain.Flight) FlightResponse {
 	return FlightResponse{
 		ICAO24:              f.ICAO24,
@@ -102,10 +33,21 @@ func mapToResponse(f *domain.Flight) FlightResponse {
 }
 
 func (h *APIHandler) SetInterestsHandler(ctx context.Context, input *SetInterestsInput) (*SetInterestsOutput, error) {
-	err := h.app.SetUserInterests(ctx, input.Body.UserEmail, input.Body.Password, input.Body.AirportCodes)
+	var domainInterests []domain.Interest
+
+	for _, item := range input.Body.Interests {
+		interest, err := domain.NewInterest(input.UserEmail, item.AirportCode, item.LowValue, item.HighValue)
+		if err != nil {
+			return nil, mapError(err)
+		}
+		domainInterests = append(domainInterests, *interest)
+	}
+
+	err := h.app.SetUserInterests(ctx, input.UserEmail, input.Password, domainInterests)
 	if err != nil {
 		return nil, mapError(err)
 	}
+
 	resp := &SetInterestsOutput{}
 	resp.Body.Message = "Interests updated successfully"
 
@@ -113,13 +55,23 @@ func (h *APIHandler) SetInterestsHandler(ctx context.Context, input *SetInterest
 }
 
 func (h *APIHandler) GetUserInterestsHandler(ctx context.Context, input *AuthQueryInput) (*InterestsOutput, error) {
-	codes, err := h.app.GetUserInterests(ctx, input.UserEmail, input.Password)
+	interests, err := h.app.GetUserInterests(ctx, input.UserEmail, input.Password)
 	if err != nil {
 		return nil, mapError(err)
 	}
 
+	dtos := make([]InterestOutputItem, len(interests))
+	for i, interest := range interests {
+		dtos[i] = InterestOutputItem{
+			AirportCode: interest.AirportCode,
+			HighValue:   interest.HighValue,
+			LowValue:    interest.LowValue,
+		}
+	}
+
 	resp := &InterestsOutput{}
-	resp.Body.AirportCodes = codes
+	resp.Body.Interests = dtos
+
 	return resp, nil
 }
 

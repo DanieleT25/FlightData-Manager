@@ -2,16 +2,10 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
-	"os"
 	"time"
-
-	"google.golang.org/grpc/credentials"
 
 	"github.com/DanieleT25/FlightData-Manager/microservices/user-manager/config"
 	"github.com/DanieleT25/FlightData-Manager/microservices/user-manager/internal/adapters/grpc_server"
@@ -19,7 +13,6 @@ import (
 	"github.com/DanieleT25/FlightData-Manager/microservices/user-manager/internal/adapters/repository"
 	"github.com/DanieleT25/FlightData-Manager/microservices/user-manager/internal/application/core/api"
 	"github.com/DanieleT25/FlightData-Manager/microservices/user-manager/internal/middleware"
-	"google.golang.org/grpc"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
@@ -31,11 +24,10 @@ func main() {
 	redisDB := config.GetRedisDB()
 	httpPort := config.GetServerPort()
 	grpcPort := config.GetGRPCPort()
-	env := config.GetEnv()
 
 	ctx := context.Background()
 
-	log.Printf("Starting User Manager Service (Environment: %s)", env)
+	log.Printf("Starting User Manager Service")
 	log.Printf("Connecting to Redis at %s (DB: %d)...", redisAddr, redisDB)
 
 	userRepo, err := repository.NewRedisRepository(ctx, redisAddr, redisPass, redisDB)
@@ -50,23 +42,8 @@ func main() {
 	grpcAdapter := grpc_server.NewGrpcAdapter(userApplication)
 
 	go func() {
-		tlsCreds, err := loadTLSCredentials()
-		if err != nil {
-			log.Fatalf("Failed to load TLS keys: %v", err)
-		}
-
-		listenAddr := fmt.Sprintf(":%s", grpcPort)
-		lis, err := net.Listen("tcp", listenAddr)
-		if err != nil {
-			log.Fatalf("Failed to listen for gRPC: %v", err)
-		}
-
-		grpcServer := grpc.NewServer(grpc.Creds(tlsCreds))
-		grpcAdapter.Register(grpcServer)
-
-		log.Printf("gRPC Server listening on port %s", grpcPort)
-		if err := grpcServer.Serve(lis); err != nil {
-			log.Fatalf("Failed to serve gRPC: %v", err)
+		if err := grpcAdapter.Start(grpcPort); err != nil {
+			log.Fatalf("CRITICAL: gRPC Server failed to start: %v", err)
 		}
 	}()
 
@@ -96,28 +73,4 @@ func main() {
 	if err := httpServer.ListenAndServe(); err != nil {
 		log.Fatalf("HTTP Server failed: %v", err)
 	}
-}
-
-func loadTLSCredentials() (credentials.TransportCredentials, error) {
-	serverCert, err := tls.LoadX509KeyPair("/certs/server-cert.pem", "/certs/server-key.pem")
-	if err != nil {
-		return nil, err
-	}
-
-	certPool := x509.NewCertPool()
-	ca, err := os.ReadFile("/certs/ca-cert.pem")
-	if err != nil {
-		return nil, err
-	}
-	if !certPool.AppendCertsFromPEM(ca) {
-		return nil, fmt.Errorf("failed to append CA cert")
-	}
-
-	config := &tls.Config{
-		Certificates: []tls.Certificate{serverCert},
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		ClientCAs:    certPool,
-	}
-
-	return credentials.NewTLS(config), nil
 }

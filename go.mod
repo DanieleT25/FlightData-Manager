@@ -3,6 +3,7 @@ module github.com/DanieleT25/FlightData-Manager
 go 1.25.1
 
 require (
+	github.com/confluentinc/confluent-kafka-go/v2 v2.12.0
 	github.com/danielgtaylor/huma/v2 v2.34.1
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
 	github.com/neo4j/neo4j-go-driver/v5 v5.28.4
@@ -17,6 +18,7 @@ require (
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+	github.com/klauspost/compress v1.18.1 // indirect
 	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/sys v0.38.0 // indirect
 	golang.org/x/text v0.31.0 // indirect

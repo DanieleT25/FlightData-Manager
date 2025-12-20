@@ -18,9 +18,11 @@ type Flight struct {
 type Interest struct {
 	UserEmail   string `json:"user_email"`
 	AirportCode string `json:"airport_code"`
+	LowValue    *int   `json:"low_value,omitempty"`
+	HighValue   *int   `json:"high_value,omitempty"`
 }
 
-func NewInterest(email, airportCode string) (*Interest, error) {
+func NewInterest(email, airportCode string, low, high *int) (*Interest, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	airportCode = strings.ToUpper(strings.TrimSpace((airportCode)))
 
@@ -33,9 +35,16 @@ func NewInterest(email, airportCode string) (*Interest, error) {
 	if len(airportCode) != 4 {
 		return nil, errors.New("invalid ICAO airport code (must be 4 chars)")
 	}
+	if low != nil && high != nil {
+		if *low >= *high {
+			return nil, errors.New("low-value must be lower than high-value")
+		}
+	}
 
 	return &Interest{
 		UserEmail:   email,
 		AirportCode: airportCode,
+		LowValue:    low,
+		HighValue:   high,
 	}, nil
 }

@@ -28,17 +28,28 @@ func NewNeo4jRepository(ctx context.Context, uri, username, password string) (*N
 	return &Neo4jRepository{driver: driver}, nil
 }
 
-func (r *Neo4jRepository) SetInterests(ctx context.Context, email string, airportCodes []string) error {
+func (r *Neo4jRepository) SetInterests(ctx context.Context, email string, interests []domain.Interest) error {
+	interestMaps := make([]map[string]any, len(interests))
+	for i, interest := range interests {
+		interestMaps[i] = map[string]any{
+			"code": interest.AirportCode,
+			"low":  interest.LowValue,
+			"high": interest.HighValue,
+		}
+	}
+
 	query := `
 		MERGE (u:User {email: $email})
 		WITH u
-		UNWIND $airportCodes as code
-		MERGE (a:Airport {code: code})
-		MERGE (u)-[:INTERESTED_IN]->(a)
+		UNWIND $interests as item
+		MERGE (a:Airport {code: item.code})
+		MERGE (u)-[r:INTERESTED_IN]->(a)
+		SET r.high_value = item.high,
+		    r.low_value = item.low
 	`
 	params := map[string]any{
-		"email":        email,
-		"airportCodes": airportCodes,
+		"email":     email,
+		"interests": interestMaps,
 	}
 
 	_, err := neo4j.ExecuteQuery(ctx, r.driver, query, params, neo4j.EagerResultTransformer)
@@ -48,23 +59,43 @@ func (r *Neo4jRepository) SetInterests(ctx context.Context, email string, airpor
 	return nil
 }
 
-func (r *Neo4jRepository) GetInterests(ctx context.Context, email string) ([]string, error) {
+func (r *Neo4jRepository) GetInterests(ctx context.Context, email string) ([]domain.Interest, error) {
 	query := `
-		MATCH (u:User {email: $email})-[:INTERESTED_IN]->(a:Airport)
-		RETURN a.code
+		MATCH (u:User {email: $email})-[r:INTERESTED_IN]->(a:Airport)
+		RETURN a.code, r.low_value, r.high_value
 	`
 	result, err := neo4j.ExecuteQuery(ctx, r.driver, query, map[string]any{"email": email}, neo4j.EagerResultTransformer)
 	if err != nil {
 		return nil, err
 	}
 
-	var airports []string
+	var interests []domain.Interest
 	for _, record := range result.Records {
-		if val, ok := record.Values[0].(string); ok {
-			airports = append(airports, val)
+		code, ok := record.Values[0].(string)
+		if !ok {
+			continue
 		}
+
+		var low *int
+		if val, ok := record.Values[1].(int64); ok {
+			l := int(val)
+			low = &l
+		}
+
+		var high *int
+		if val, ok := record.Values[2].(int64); ok {
+			h := int(val)
+			high = &h
+		}
+
+		interests = append(interests, domain.Interest{
+			UserEmail:   email,
+			AirportCode: code,
+			LowValue:    low,
+			HighValue:   high,
+		})
 	}
-	return airports, nil
+	return interests, nil
 }
 
 func (r *Neo4jRepository) IsUserInterested(ctx context.Context, email string, airportCode string) (bool, error) {
@@ -289,4 +320,8 @@ func (r *Neo4jRepository) UpdateAirportLastSync(ctx context.Context, airportCode
 		map[string]any{"code": airportCode, "ts": timestamp},
 		neo4j.EagerResultTransformer)
 	return err
+}
+
+func (r *Neo4jRepository) Close(ctx context.Context) error {
+	return r.driver.Close(ctx)
 }
