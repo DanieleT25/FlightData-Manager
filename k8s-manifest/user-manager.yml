@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-manager
+  namespace: flight-data
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: user-manager
+  template:
+    metadata:
+      labels:
+        app: user-manager
+    spec:
+      containers:
+      - name: user-manager
+        image: user-manager
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+        - containerPort: 50051
+        envFrom:
+        - configMapRef:
+            name: app-env
+        - secretRef:
+            name: app-secrets
+        env:
+        - name: SERVER_PORT
+          value: "8080"
+        - name: GRPC_PORT
+          value: "50051"
+        - name: SERVICE_NAME
+          value: "user-manager"
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        volumeMounts:
+        - name: certs-volume
+          mountPath: /certs
+          readOnly: true
+        readinessProbe:
+          httpGet:
+            path: /docs/user
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "128Mi"
+            cpu: "250m"
+      volumes:
+      - name: certs-volume
+        secret:
+          secretName: grpc-certs
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-manager
+  namespace: flight-data
+spec:
+  ports:
+  - port: 8080
+    name: http
+  - port: 50051
+    name: grpc
+  selector:
+    app: user-manager

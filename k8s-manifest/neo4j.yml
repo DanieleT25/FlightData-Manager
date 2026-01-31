@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: neo4j
+  namespace: flight-data
+spec:
+  serviceName: "neo4j"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: neo4j
+  template:
+    metadata:
+      labels:
+        app: neo4j
+    spec:
+      enableServiceLinks: false
+      containers:
+      - name: neo4j
+        image: neo4j:5.15-community
+        ports:
+        - containerPort: 7474
+        - containerPort: 7687
+        env:
+        - name: DB_USER
+          valueFrom:
+            configMapKeyRef:
+              name: app-env
+              key: NEO4J_USER
+        - name: DB_PASS
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: NEO4J_PASSWORD
+        - name: NEO4J_AUTH
+          value: "$(DB_USER)/$(DB_PASS)"
+        volumeMounts:
+        - name: neo4j-data
+          mountPath: /data
+  volumeClaimTemplates:
+  - metadata:
+      name: neo4j-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: neo4j
+  namespace: flight-data
+spec:
+  ports:
+  - port: 7474
+    name: http
+  - port: 7687
+    name: bolt
+  selector:
+    app: neo4j

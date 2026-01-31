@@ -10,12 +10,14 @@ import (
 	"github.com/DanieleT25/FlightData-Manager/microservices/user-manager/config"
 	"github.com/DanieleT25/FlightData-Manager/microservices/user-manager/internal/adapters/grpc_server"
 	"github.com/DanieleT25/FlightData-Manager/microservices/user-manager/internal/adapters/huma_api"
+	"github.com/DanieleT25/FlightData-Manager/microservices/user-manager/internal/adapters/observability"
 	"github.com/DanieleT25/FlightData-Manager/microservices/user-manager/internal/adapters/repository"
 	"github.com/DanieleT25/FlightData-Manager/microservices/user-manager/internal/application/core/api"
 	"github.com/DanieleT25/FlightData-Manager/microservices/user-manager/internal/middleware"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -24,10 +26,15 @@ func main() {
 	redisDB := config.GetRedisDB()
 	httpPort := config.GetServerPort()
 	grpcPort := config.GetGRPCPort()
+	serviceName := config.GetServiceName()
+	nodeName := config.GetNodeName()
 
 	ctx := context.Background()
 
 	log.Printf("Starting User Manager Service")
+
+	monitor := observability.NewMonitor(serviceName, nodeName)
+
 	log.Printf("Connecting to Redis at %s (DB: %d)...", redisAddr, redisDB)
 
 	userRepo, err := repository.NewRedisRepository(ctx, redisAddr, redisPass, redisDB)
@@ -39,7 +46,7 @@ func main() {
 	userApplication := api.NewApplication(userRepo)
 
 	httpAdapter := huma_api.NewAPIHandler(userApplication)
-	grpcAdapter := grpc_server.NewGrpcAdapter(userApplication)
+	grpcAdapter := grpc_server.NewGrpcAdapter(userApplication, monitor)
 
 	go func() {
 		if err := grpcAdapter.Start(grpcPort); err != nil {
@@ -48,6 +55,7 @@ func main() {
 	}()
 
 	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
 
 	humaConfig := huma.DefaultConfig("User Manager API", "1.0.0")
 	humaConfig.Components.SecuritySchemes = map[string]*huma.SecurityScheme{}
@@ -57,14 +65,17 @@ func main() {
 
 	humaAPI := humago.New(mux, humaConfig)
 	httpAdapter.RegisterRoutes(humaAPI)
-	handlerConIP := middleware.IPMiddleware(mux)
+
+	metricsMiddleware := middleware.NewMetricsMiddleware(monitor)
+	ipMiddleware := middleware.IPMiddleware(mux)
+	finalHandler := metricsMiddleware(ipMiddleware)
 
 	log.Printf("User Manager Service running on port %s", httpPort)
 	log.Printf("OpenAPI docs available at http://localhost:%s/docs", httpPort)
 
 	httpServer := &http.Server{
 		Addr:         fmt.Sprintf(":%s", httpPort),
-		Handler:      handlerConIP,
+		Handler:      finalHandler,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}

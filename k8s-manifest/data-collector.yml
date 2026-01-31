@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-collector
+  namespace: flight-data
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: data-collector
+  template:
+    metadata:
+      labels:
+        app: data-collector
+    spec:
+      containers:
+      - name: data-collector
+        image: data-collector
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - configMapRef:
+            name: app-env
+        - secretRef:
+            name: app-secrets
+        env:
+        - name: USER_MANAGER_GRPC_HOST
+          value: "user-manager:50051"
+        - name: SERVER_PORT
+          value: "8080"
+        - name: KAFKA_TOPIC
+          value: "to-alert-system"
+        - name: SERVICE_NAME
+          value: "data-collector"
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        volumeMounts:
+        - name: certs-volume
+          mountPath: /certs
+          readOnly: true
+        readinessProbe:
+          httpGet:
+            path: /docs/data
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "150m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+      volumes:
+      - name: certs-volume
+        secret:
+          secretName: grpc-certs
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-collector
+  namespace: flight-data
+spec:
+  ports:
+  - port: 8080
+    name: http
+  selector:
+    app: data-collector

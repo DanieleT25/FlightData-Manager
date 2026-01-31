@@ -141,4 +141,29 @@ You can see a quick scenario in `docs/demo.md`.
 ## Future implementation
 - JWT Authentication: Implement token-based auth to avoid sending credentials on every request to the Data Collector.
 - Microservices Testing: Implement comprehensive unit and integration tests for each microservice.
-- Observability: Add metrics and tracing for better system monitoring.
+
+## Kubernetes
+
+### 1. Configuration (app-secrets.yml)
+
+Create an `app-secrets.yml` file in k8s-manifest directory. You can copy the example below:
+
+```yml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secrets
+  namespace: flight-data
+type: Opaque
+stringData:
+  NEO4J_PASSWORD: "CHANGE_ME"
+  REDIS_PASSWORD: "CHANGE_ME"
+  OPENSKY_PASSWORD: "CHANGE_ME"
+```
+
+### 2. Run kubernetes
+
+```bash
+chmod +x deploy.sh
+./deploy.sh
+```

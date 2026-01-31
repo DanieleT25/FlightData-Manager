@@ -35,6 +35,14 @@ func GetGRPCPort() string {
 	return getEnvironmentValue("GRPC_PORT")
 }
 
+func GetServiceName() string {
+	return getEnvironmentValue("SERVICE_NAME")
+}
+
+func GetNodeName() string {
+	return getEnvironmentValue("NODE_NAME")
+}
+
 func getEnvironmentValue(key string) string {
 	if os.Getenv(key) == "" {
 		log.Fatalf("%s environment variable is missing.", key)

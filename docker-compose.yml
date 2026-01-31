@@ -58,6 +58,8 @@ services:
       REDIS_DB: ${REDIS_DB}
       SERVER_PORT: 8080
       GRPC_PORT: 50051
+      SERVICE_NAME: user-manager
+      NODE_NAME: docker-compose-node
     volumes:
       - ./pkg/certs:/certs:ro
     healthcheck:
@@ -110,6 +112,8 @@ services:
       OPENSKY_PASSWORD: ${OPENSKY_PASSWORD}
       COLLECTION_INTERVAL: 12h
       KAFKA_TOPIC: to-alert-system
+      SERVICE_NAME: data-collector
+      NODE_NAME: docker-compose-node
     volumes:
       - ./pkg/certs:/certs:ro
     healthcheck:
@@ -210,6 +214,22 @@ services:
     networks:
       - service-net
 
+  prometheus:
+    image: prom/prometheus:v3.5.1
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    ports:
+      - 53120:9090
+    restart: always
+    networks:
+      - service-net
+
 networks:
   gateway-net:
     driver: bridge
@@ -224,3 +244,4 @@ volumes:
   redis_data:
   neo4j_data:
   kafka_data:
+  prometheus_data:

@@ -15,10 +15,13 @@ import (
 	"github.com/DanieleT25/FlightData-Manager/microservices/data-collector/internal/adapters/grpc_client"
 	"github.com/DanieleT25/FlightData-Manager/microservices/data-collector/internal/adapters/huma_api"
 	"github.com/DanieleT25/FlightData-Manager/microservices/data-collector/internal/adapters/kafka_producer"
+	"github.com/DanieleT25/FlightData-Manager/microservices/data-collector/internal/adapters/observability"
 	"github.com/DanieleT25/FlightData-Manager/microservices/data-collector/internal/adapters/opensky"
 	"github.com/DanieleT25/FlightData-Manager/microservices/data-collector/internal/adapters/repository"
 	"github.com/DanieleT25/FlightData-Manager/microservices/data-collector/internal/adapters/worker"
 	"github.com/DanieleT25/FlightData-Manager/microservices/data-collector/internal/application/core/api"
+	"github.com/DanieleT25/FlightData-Manager/microservices/data-collector/internal/middleware"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
@@ -35,6 +38,10 @@ func main() {
 	kafkaBroker := config.GetKafkaBroker()
 	kafkaTopic := config.GetKafkaTopic()
 	collectionInterval := config.GetCollectionInterval()
+	serviceName := config.GetServiceName()
+	nodeName := config.GetNodeName()
+
+	monitor := observability.NewMonitor(serviceName, nodeName)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -63,11 +70,13 @@ func main() {
 
 	app := api.NewApplication(repo, userClient, openSkyClient, producerAdapter, collectionInterval)
 
-	backgroundWorker := worker.NewTickerWorker(app, collectionInterval)
+	backgroundWorker := worker.NewTickerWorker(app, collectionInterval, monitor)
 	go backgroundWorker.Start(ctx)
 
 	apiHandler := huma_api.NewAPIHandler(app)
 	mux := http.NewServeMux()
+
+	mux.Handle("/metrics", promhttp.Handler())
 
 	humaConfig := huma.DefaultConfig("Data Collector API", "1.0.0")
 	humaConfig.Info.Description = `Microservice for collecting and analyzing flight data.`
@@ -77,10 +86,13 @@ func main() {
 	humaAPI := humago.New(mux, humaConfig)
 	apiHandler.RegisterRoutes(humaAPI)
 
+	metricsMiddleware := middleware.NewMetricsMiddleware(monitor)
+	finalHandler := metricsMiddleware(mux)
+
 	serverAddr := fmt.Sprintf(":%s", httpPort)
 	server := &http.Server{
 		Addr:         serverAddr,
-		Handler:      mux,
+		Handler:      finalHandler,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}

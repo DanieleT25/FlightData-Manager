@@ -9,7 +9,9 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 
+	"github.com/DanieleT25/FlightData-Manager/microservices/user-manager/internal/adapters/observability"
 	"github.com/DanieleT25/FlightData-Manager/microservices/user-manager/internal/application/core/apperrors"
 	"github.com/DanieleT25/FlightData-Manager/microservices/user-manager/internal/ports"
 	pb "github.com/DanieleT25/FlightData-Manager/pkg/proto/user"
@@ -23,12 +25,13 @@ import (
 )
 
 type GrpcAdapter struct {
-	app ports.UserAPI
+	app     ports.UserAPI
+	monitor *observability.Monitor
 	pb.UnimplementedUserServiceServer
 }
 
-func NewGrpcAdapter(app ports.UserAPI) *GrpcAdapter {
-	return &GrpcAdapter{app: app}
+func NewGrpcAdapter(app ports.UserAPI, monitor *observability.Monitor) *GrpcAdapter {
+	return &GrpcAdapter{app: app, monitor: monitor}
 }
 
 func (g *GrpcAdapter) VerifyCredentials(ctx context.Context, req *pb.VerifyCredentialsRequest) (*pb.VerifyCredentialsResponse, error) {
@@ -103,7 +106,12 @@ func (g *GrpcAdapter) Start(port string) error {
 		return fmt.Errorf("failed to listen on port %s: %w", port, err)
 	}
 
-	grpcServer := grpc.NewServer(grpc.Creds(tlsCreds))
+	opts := []grpc.ServerOption{
+		grpc.Creds(tlsCreds),
+		grpc.UnaryInterceptor(g.metricsInterceptor),
+	}
+
+	grpcServer := grpc.NewServer(opts...)
 	pb.RegisterUserServiceServer(grpcServer, g)
 
 	log.Printf("gRPC Server listening on port %s", port)
@@ -133,4 +141,22 @@ func loadServerTLSCredentials() (credentials.TransportCredentials, error) {
 	}
 
 	return credentials.NewTLS(config), nil
+}
+
+func (g *GrpcAdapter) metricsInterceptor(
+	ctx context.Context,
+	req interface{},
+	info *grpc.UnaryServerInfo,
+	handler grpc.UnaryHandler,
+) (interface{}, error) {
+	start := time.Now()
+	resp, err := handler(ctx, req)
+	duration := time.Since(start).Seconds()
+	st, _ := status.FromError(err)
+	statusCode := st.Code().String()
+
+	g.monitor.ObserveDuration("gRPC", info.FullMethod, duration)
+	g.monitor.IncRequest("gRPC", info.FullMethod, statusCode)
+
+	return resp, err
 }

@@ -34,6 +34,14 @@ func GetKafkaTopic() string {
 	return getEnvironmentValue("KAFKA_TOPIC")
 }
 
+func GetServiceName() string {
+	return getEnvironmentValue("SERVICE_NAME")
+}
+
+func GetNodeName() string {
+	return getEnvironmentValue("NODE_NAME")
+}
+
 func getEnvironmentValue(key string) string {
 	val := os.Getenv(key)
 	if val == "" {

@@ -2,3 +2,4 @@
 .env
 .DS_Store
 pkg/certs/
+app-secrets.yml
