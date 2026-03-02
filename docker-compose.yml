@@ -24,6 +24,7 @@ services:
     depends_on:
       - user-manager
       - data-collector
+      - prometheus
     networks:
       - gateway-net
 
@@ -229,6 +230,7 @@ services:
     restart: always
     networks:
       - service-net
+      - gateway-net
 
 networks:
   gateway-net:
