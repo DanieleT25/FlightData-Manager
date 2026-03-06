@@ -112,7 +112,8 @@ The system will be available via the **API Gateway (Nginx)** at `https://localho
   * **User Manager Docs:** https://localhost:3443/docs/user
   * **Data Collector Docs:** https://localhost:3443/docs/data
 
-You can see a quick scenario in `docs/demo.md`.
+> [!note]
+> You can see a quick scenario in `docs/demo.md`.
 
 ## Development & Debugging
 
