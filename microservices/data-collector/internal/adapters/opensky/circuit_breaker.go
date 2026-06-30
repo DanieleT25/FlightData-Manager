@@ -4,6 +4,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/DanieleT25/FlightData-Manager/microservices/data-collector/internal/adapters/observability"
 )
 
 type State int
@@ -23,13 +25,43 @@ type CircuitBreaker struct {
 	recoveryTimeout  time.Duration
 	failureCount     int
 	lastFailureTime  time.Time
+	monitor          *observability.Monitor
+	targetName       string
 }
 
-func NewCircuitBreaker(threshold int, recoveryTimeout time.Duration) *CircuitBreaker {
-	return &CircuitBreaker{
+func NewCircuitBreaker(threshold int, recoveryTimeout time.Duration, monitor *observability.Monitor) *CircuitBreaker {
+	cb := &CircuitBreaker{
 		state:            StateClosed,
 		failureThreshold: threshold,
 		recoveryTimeout:  recoveryTimeout,
+		monitor:          monitor,
+		targetName:       "opensky",
+	}
+
+	if monitor != nil {
+		monitor.SetCBState(cb.targetName, 0)
+	}
+
+	return cb
+}
+
+func (cb *CircuitBreaker) changeState(newState State) {
+	if cb.state == newState {
+		return
+	}
+	cb.state = newState
+
+	if cb.monitor != nil {
+		var stateCode float64
+		switch newState {
+		case StateClosed:
+			stateCode = 0
+		case StateHalfOpen:
+			stateCode = 1
+		case StateOpen:
+			stateCode = 2
+		}
+		cb.monitor.SetCBState(cb.targetName, stateCode)
 	}
 }
 
@@ -38,9 +70,14 @@ func (cb *CircuitBreaker) Execute(job func() (any, error)) (any, error) {
 
 	if cb.state == StateOpen {
 		if time.Since(cb.lastFailureTime) > cb.recoveryTimeout {
-			cb.state = StateHalfOpen
+			cb.changeState(StateHalfOpen)
 		} else {
 			cb.mu.Unlock()
+
+			if cb.monitor != nil {
+				cb.monitor.IncCBRejected(cb.targetName)
+			}
+
 			return nil, ErrCircuitOpen
 		}
 	}
@@ -57,7 +94,7 @@ func (cb *CircuitBreaker) Execute(job func() (any, error)) (any, error) {
 		cb.lastFailureTime = time.Now()
 
 		if cb.failureCount >= cb.failureThreshold {
-			cb.state = StateOpen
+			cb.changeState(StateOpen)
 		}
 
 		return nil, err
@@ -65,7 +102,7 @@ func (cb *CircuitBreaker) Execute(job func() (any, error)) (any, error) {
 
 	switch cb.state {
 	case StateHalfOpen:
-		cb.state = StateClosed
+		cb.changeState(StateClosed)
 		cb.failureCount = 0
 	case StateClosed:
 		cb.failureCount = 0

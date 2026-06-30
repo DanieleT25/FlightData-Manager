@@ -61,12 +61,12 @@ func main() {
 	log.Println("Neo4j connected")
 
 	log.Printf("Connecting to User Manager at %s...", userManagerHost)
-	userClient, err := grpc_client.NewUserClientAdapter(userManagerHost)
+	userClient, err := grpc_client.NewUserClientAdapter(userManagerHost, monitor)
 	if err != nil {
 		log.Fatalf("CRITICAL: Failed to create gRPC client: %v", err)
 	}
 
-	openSkyClient := opensky.NewOpenSkyClient(osUser, osPass)
+	openSkyClient := opensky.NewOpenSkyClient(osUser, osPass, monitor)
 
 	app := api.NewApplication(repo, userClient, openSkyClient, producerAdapter, collectionInterval)
 

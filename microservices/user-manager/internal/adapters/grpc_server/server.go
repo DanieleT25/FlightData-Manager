@@ -149,6 +149,9 @@ func (g *GrpcAdapter) metricsInterceptor(
 	info *grpc.UnaryServerInfo,
 	handler grpc.UnaryHandler,
 ) (interface{}, error) {
+	g.monitor.IncInFlight()
+	defer g.monitor.DecInFlight()
+
 	start := time.Now()
 	resp, err := handler(ctx, req)
 	duration := time.Since(start).Seconds()

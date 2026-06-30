@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DanieleT25/FlightData-Manager/microservices/data-collector/internal/adapters/observability"
 	"github.com/DanieleT25/FlightData-Manager/microservices/data-collector/internal/application/core/apperrors"
 	"github.com/DanieleT25/FlightData-Manager/microservices/data-collector/internal/application/core/domain"
 )
@@ -31,8 +32,8 @@ type authResponse struct {
 	AccessToken string `json:"access_token"`
 }
 
-func NewOpenSkyClient(clientID, clientSecret string) *OpenSkyClient {
-	cb := NewCircuitBreaker(3, 30*time.Second)
+func NewOpenSkyClient(clientID, clientSecret string, monitor *observability.Monitor) *OpenSkyClient {
+	cb := NewCircuitBreaker(3, 30*time.Second, monitor)
 
 	return &OpenSkyClient{
 		clientID:     clientID,

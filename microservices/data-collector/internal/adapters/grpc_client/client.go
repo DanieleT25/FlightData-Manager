@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/DanieleT25/FlightData-Manager/microservices/data-collector/internal/adapters/observability"
 	"github.com/DanieleT25/FlightData-Manager/microservices/data-collector/internal/application/core/apperrors"
 	pb "github.com/DanieleT25/FlightData-Manager/pkg/proto/user"
 	"github.com/sony/gobreaker"
@@ -25,7 +26,7 @@ type UserClientAdapter struct {
 	client pb.UserServiceClient
 }
 
-func NewUserClientAdapter(serverAddr string) (*UserClientAdapter, error) {
+func NewUserClientAdapter(serverAddr string, monitor *observability.Monitor) (*UserClientAdapter, error) {
 	retryOpts := []grpc_retry.CallOption{
 		grpc_retry.WithMax(3),
 		grpc_retry.WithCodes(codes.Unavailable, codes.ResourceExhausted),
@@ -43,6 +44,17 @@ func NewUserClientAdapter(serverAddr string) (*UserClientAdapter, error) {
 		},
 		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
 			fmt.Printf("Circuit Breaker '%s' changed from %s to %s\n", name, from, to)
+
+			var stateCode float64
+			switch to {
+			case gobreaker.StateClosed:
+				stateCode = 0
+			case gobreaker.StateHalfOpen:
+				stateCode = 1
+			case gobreaker.StateOpen:
+				stateCode = 2
+			}
+			monitor.SetCBState("user_manager", stateCode)
 		},
 	}
 	cb := gobreaker.NewCircuitBreaker(cbSettings)
@@ -55,7 +67,7 @@ func NewUserClientAdapter(serverAddr string) (*UserClientAdapter, error) {
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(tlsCreds),
 		grpc.WithChainUnaryInterceptor(
-			circuitBreakerClientInterceptor(cb),
+			circuitBreakerClientInterceptor(cb, monitor),
 			grpc_retry.UnaryClientInterceptor(retryOpts...),
 		),
 	}

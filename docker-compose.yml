@@ -230,7 +230,38 @@ services:
     restart: always
     networks:
       - service-net
-      - gateway-net
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.0
+    container_name: cadvisor
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg
+    networks:
+      - service-net
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.3
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+    restart: always
+    depends_on:
+      - prometheus
+    networks:
+      - service-net
 
 networks:
   gateway-net:
@@ -247,3 +278,4 @@ volumes:
   neo4j_data:
   kafka_data:
   prometheus_data:
+  grafana_data:

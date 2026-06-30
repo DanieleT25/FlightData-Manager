@@ -12,7 +12,7 @@ type CollectorAPI interface {
 	GetAirportFlights(ctx context.Context, email, password, airportCode string, limit int) ([]domain.Flight, error)
 	GetLastFlight(ctx context.Context, email, password, airportCode, direction string) (*domain.Flight, error)
 	GetFlightsAverage(ctx context.Context, email, password, airportCode, direction string, days int) (float64, error)
-	RunCollectionCycle(ctx context.Context)
+	RunCollectionCycle(ctx context.Context) error
 }
 
 type EventProducer interface {

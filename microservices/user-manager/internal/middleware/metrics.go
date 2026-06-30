@@ -21,6 +21,9 @@ func (rec *statusRecorder) WriteHeader(code int) {
 func NewMetricsMiddleware(monitor *observability.Monitor) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			monitor.IncInFlight()
+			defer monitor.DecInFlight()
+
 			start := time.Now()
 			rec := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 			next.ServeHTTP(rec, r)

@@ -3,11 +3,12 @@ package grpc_client
 import (
 	"context"
 
+	"github.com/DanieleT25/FlightData-Manager/microservices/data-collector/internal/adapters/observability"
 	"github.com/sony/gobreaker"
 	"google.golang.org/grpc"
 )
 
-func circuitBreakerClientInterceptor(cb *gobreaker.CircuitBreaker) grpc.UnaryClientInterceptor {
+func circuitBreakerClientInterceptor(cb *gobreaker.CircuitBreaker, monitor *observability.Monitor) grpc.UnaryClientInterceptor {
 	return func(
 		ctx context.Context,
 		method string,
@@ -23,6 +24,12 @@ func circuitBreakerClientInterceptor(cb *gobreaker.CircuitBreaker) grpc.UnaryCli
 			}
 			return nil, nil
 		})
+
+		if err != nil {
+			if err == gobreaker.ErrOpenState || err == gobreaker.ErrTooManyRequests {
+				monitor.IncCBRejected("user_manager")
+			}
+		}
 
 		return err
 	}

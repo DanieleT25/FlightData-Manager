@@ -2,11 +2,12 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 )
 
-func (a *Application) RunCollectionCycle(ctx context.Context) {
+func (a *Application) RunCollectionCycle(ctx context.Context) error {
 	log.Println("Core: Starting collection cycle logic...")
 
 	users, err := a.db.GetAllUsers(ctx)
@@ -23,15 +24,17 @@ func (a *Application) RunCollectionCycle(ctx context.Context) {
 	airportsMap, err := a.db.GetAirportsToMonitor(ctx)
 	if err != nil {
 		log.Printf("Failed to fetch airports: %v", err)
-		return
+		return fmt.Errorf("critical database error fetching airports: %w", err)
 	}
 	if len(airportsMap) == 0 {
 		log.Println("No airports to monitor. Skipping OpenSky calls.")
-		return
+		return nil
 	}
 
 	now := time.Now()
 	fetchEnd := now.Unix()
+
+	var partialErrors int
 
 	for code, lastUpdate := range airportsMap {
 		timeSinceLast := now.Sub(time.Unix(lastUpdate, 0))
@@ -78,6 +81,7 @@ func (a *Application) RunCollectionCycle(ctx context.Context) {
 			err := a.db.UpdateAirportLastSync(ctx, code, fetchEnd)
 			if err != nil {
 				log.Printf("[%s] Failed to update timestamp: %v", code, err)
+				partialErrors++
 			} else {
 				log.Printf("[%s] Cycle success. Timestamp updated.", code)
 
@@ -87,14 +91,22 @@ func (a *Application) RunCollectionCycle(ctx context.Context) {
 				err := a.producer.SendUpdate(code, totalArrivals, totalDepartures, fetchEnd)
 				if err != nil {
 					log.Printf("[%s] WARNING: Failed to send Kafka notification: %v", code, err)
+					partialErrors++
 				} else {
 					log.Printf("[%s] Kafka notification sent successfully", code)
 				}
 			}
 		} else {
 			log.Printf("[%s] Cycle failed or partial errors occurred. Timestamp NOT updated (will retry next cycle).", code)
+			partialErrors++
 		}
 	}
 
 	log.Println("Core: Cycle completed.")
+
+	if partialErrors > 0 {
+		return fmt.Errorf("cycle completed with %d partial errors (check logs)", partialErrors)
+	}
+
+	return nil
 }
