@@ -3,3 +3,4 @@
 .DS_Store
 pkg/certs/
 app-secrets.yml
+notes/

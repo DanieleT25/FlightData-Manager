@@ -10,6 +10,17 @@ x-kafka-env: &kafka-env
   KAFKA_BROKER: kafka:9092
 
 services:
+  frontend:
+    <<: *common-service
+    container_name: frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    expose:
+      - "80"
+    networks:
+      - gateway-net
+
   nginx:
     <<: *common-service
     image: nginx:alpine
