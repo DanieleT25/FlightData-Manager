@@ -4,3 +4,7 @@
 pkg/certs/
 app-secrets.yml
 notes/
+
+# Terraform & SSH keys
+terraform/id_ed25519
+terraform/id_ed25519.pub

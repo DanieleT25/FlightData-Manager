@@ -1,0 +1,9 @@
+# gitea-setup/.gitignore
+# Runtime data and binaries — never commit these
+gitea
+act_runner
+conf/
+data/
+log/
+.runner
+.env
