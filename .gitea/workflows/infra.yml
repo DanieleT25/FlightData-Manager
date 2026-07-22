@@ -49,6 +49,9 @@ jobs:
         run: |
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > terraform/id_ed25519
           chmod 600 terraform/id_ed25519
+          
+          sed -i.bak -E "s|ansible_ssh_private_key_file=[^ ]*|ansible_ssh_private_key_file=$PWD/terraform/id_ed25519|g" ~/k8s-hosts.ini
+          rm -f ~/k8s-hosts.ini.bak
 
       - name: Wait for VMs to be SSH-ready
         run: ansible all -i ~/k8s-hosts.ini -m ansible.builtin.wait_for_connection -a 'timeout=180'
