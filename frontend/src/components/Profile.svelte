@@ -58,7 +58,7 @@
   <hr />
 
   <details>
-    <summary role="button" class="outline contrast">Delete Account</summary>
+    <summary class="outline contrast">Delete Account</summary>
     <div style="margin-top: 1rem; padding: 1rem; background-color: var(--pico-del-color); border-radius: var(--pico-border-radius); color: white;">
       <strong>Warning:</strong> Deleting your account will permanently remove all your data.
       

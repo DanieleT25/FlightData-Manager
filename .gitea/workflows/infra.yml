@@ -1,0 +1,91 @@
+name: Provision K8s Cluster
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'terraform/**'
+      - 'ansible/**'
+      - '.gitea/workflows/infra.yml'
+  workflow_dispatch:
+
+jobs:
+  # ── Job 1: Provision VMs with OpenTofu ──────────────────────────────────────
+  provision:
+    runs-on: self-hosted   # shell runner — needs multipass + tofu on host
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write SSH key pair
+        run: |
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > terraform/id_ed25519
+          echo "${{ secrets.SSH_PUBLIC_KEY }}"  > terraform/id_ed25519.pub
+          chmod 600 terraform/id_ed25519
+
+      - name: tofu init
+        run: tofu -chdir=terraform init -reconfigure -backend-config="path=${HOME}/k8s-terraform.tfstate"
+
+      - name: tofu plan
+        run: tofu -chdir=terraform plan -out=tfplan
+
+      - name: tofu apply
+        run: tofu -chdir=terraform apply -auto-approve tfplan
+
+      - name: Show outputs
+        run: tofu -chdir=terraform output
+
+  # ── Job 2: Configure K8s cluster with Ansible ────────────────────────────────
+  configure:
+    runs-on: self-hosted
+    needs: provision
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write SSH private key
+        run: |
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > terraform/id_ed25519
+          chmod 600 terraform/id_ed25519
+
+      - name: Wait for VMs to be SSH-ready
+        run: ansible all -i ~/k8s-hosts.ini -m ansible.builtin.wait_for_connection -a 'timeout=180'
+
+      - name: Install K8s prerequisites on all nodes
+        run: ansible-playbook -i ~/k8s-hosts.ini ansible/00-prerequisites.yml
+
+      - name: Bootstrap control plane
+        run: ansible-playbook -i ~/k8s-hosts.ini ansible/01-control-plane.yml
+
+      - name: Join worker nodes
+        run: ansible-playbook -i ~/k8s-hosts.ini ansible/02-workers.yml
+
+      - name: Save kubeconfig to host runner
+        run: |
+          # 1. Extract the control-plane IP in a way compatible with macOS and Linux
+          CONTROL_PLANE_IP=$(grep 'ansible_host=' ~/k8s-hosts.ini | head -1 | sed 's/.*ansible_host=\([^ ]*\).*/\1/')
+          
+          # 2. Copy the configuration from the Control Plane node
+          scp -i terraform/id_ed25519 \
+            -o StrictHostKeyChecking=no \
+            ubuntu@${CONTROL_PLANE_IP}:/home/ubuntu/.kube/config \
+            ~/k8s-config
+            
+          # 3. Modify the IP in the config using -i.bak for macOS compatibility
+          sed -i.bak "s|https://[0-9.]*:6443|https://${CONTROL_PLANE_IP}:6443|" ~/k8s-config
+          rm -f ~/k8s-config.bak
+          
+          chmod 600 ~/k8s-config
+          echo "kubeconfig saved — testing connectivity..."
+          KUBECONFIG=~/k8s-config kubectl get nodes
+
+      - name: Install cluster monitoring
+        env:
+          GRAFANA_PASSWORD: ${{ secrets.GRAFANA_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$GRAFANA_PASSWORD"
+          command -v helm >/dev/null
+          export KUBECONFIG="$HOME/k8s-config"
+          bash k8sadmin/metrics-server/install.sh
+          bash k8sadmin/monitoring/install.sh

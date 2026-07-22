@@ -23,6 +23,18 @@ type AirportUpdateEvent struct {
 	Timestamp       int64  `json:"timestamp"`
 }
 
+// processMessage contains the boundary between the Kafka payload and the core
+// service. Keeping it separate from polling makes malformed events testable
+// without a running Kafka broker.
+func (kc *KafkaConsumer) processMessage(ctx context.Context, payload []byte) error {
+	var updateEvent AirportUpdateEvent
+	if err := json.Unmarshal(payload, &updateEvent); err != nil {
+		return fmt.Errorf("decode airport update: %w", err)
+	}
+
+	return kc.service.CheckThresholds(ctx, updateEvent.AirportCode, updateEvent.TotalArrivals, updateEvent.TotalDepartures)
+}
+
 func NewKafkaConsumer(brokerAddr, groupID, topic string, service ports.AlertService) (*KafkaConsumer, error) {
 	config := &kafka.ConfigMap{
 		"bootstrap.servers":  brokerAddr,
@@ -79,7 +91,7 @@ func (kc *KafkaConsumer) Start(ctx context.Context) {
 
 				log.Printf("Processing update for %s", updateEvent.AirportCode)
 
-				err := kc.service.CheckThresholds(ctx, updateEvent.AirportCode, updateEvent.TotalArrivals, updateEvent.TotalDepartures)
+				err := kc.processMessage(ctx, e.Value)
 				if err != nil {
 					log.Printf("Error processing logic: %v", err)
 				} else {

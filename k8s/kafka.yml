@@ -15,6 +15,8 @@ spec:
         app: kafka
     spec:
       enableServiceLinks: false
+      nodeSelector:
+        flight-data.io/local-storage: "true"
       containers:
       - name: kafka
         image: confluentinc/cp-kafka:7.4.0
@@ -23,11 +25,11 @@ spec:
         - containerPort: 29093
         resources:
           requests:
-            memory: "512Mi"
+            memory: "256Mi"
             cpu: "250m"
           limits:
-            memory: "1.5Gi"
-            cpu: "1000m"
+            memory: "768Mi"
+            cpu: "750m"
         env:
         - name: KAFKA_HEAP_OPTS
           value: "-Xmx512M -Xms512M"
@@ -56,14 +58,11 @@ spec:
         volumeMounts:
         - name: kafka-data
           mountPath: /var/lib/kafka/data
-  volumeClaimTemplates:
-  - metadata:
-      name: kafka-data
-    spec:
-      accessModes: [ "ReadWriteOnce" ]
-      resources:
-        requests:
-          storage: 1Gi
+      volumes:
+      - name: kafka-data
+        hostPath:
+          path: /var/lib/flight-data/kafka
+          type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service

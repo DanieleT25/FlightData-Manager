@@ -1,38 +1,36 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: alert-system
+  name: alert-notifier
   namespace: flight-data
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: alert-system
+      app: alert-notifier
   template:
     metadata:
       labels:
-        app: alert-system
+        app: alert-notifier
     spec:
       containers:
-      - name: alert-system
-        image: alert-system
-        imagePullPolicy: Never
+      - name: alert-notifier
+        image: flight-data/alert-notifier:dev
+        imagePullPolicy: IfNotPresent
         envFrom:
         - configMapRef:
             name: app-env
         - secretRef:
             name: app-secrets
         env:
-        - name: KAFKA_TOPIC_INPUT
-          value: "to-alert-system"
-        - name: KAFKA_TOPIC_OUTPUT
+        - name: KAFKA_TOPIC
           value: "to-notifier"
         - name: KAFKA_GROUP_ID
-          value: "alert-system-group"
+          value: "alert-notifier-group"
         resources:
           requests:
             memory: "64Mi"
             cpu: "50m"
           limits:
             memory: "128Mi"
-            cpu: "250m"
+            cpu: "200m"

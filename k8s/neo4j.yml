@@ -15,6 +15,8 @@ spec:
         app: neo4j
     spec:
       enableServiceLinks: false
+      nodeSelector:
+        flight-data.io/local-storage: "true"
       containers:
       - name: neo4j
         image: neo4j:5.15-community
@@ -34,17 +36,27 @@ spec:
               key: NEO4J_PASSWORD
         - name: NEO4J_AUTH
           value: "$(DB_USER)/$(DB_PASS)"
+        - name: NEO4J_server_memory_heap_initial__size
+          value: "256m"
+        - name: NEO4J_server_memory_heap_max__size
+          value: "512m"
+        - name: NEO4J_server_memory_pagecache_size
+          value: "256m"
         volumeMounts:
         - name: neo4j-data
           mountPath: /data
-  volumeClaimTemplates:
-  - metadata:
-      name: neo4j-data
-    spec:
-      accessModes: [ "ReadWriteOnce" ]
-      resources:
-        requests:
-          storage: 1Gi
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "750m"
+      volumes:
+      - name: neo4j-data
+        hostPath:
+          path: /var/lib/flight-data/neo4j
+          type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service

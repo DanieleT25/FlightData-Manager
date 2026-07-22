@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # register-runner.sh
-# Downloads act_runner, registers it as a self-hosted shell runner on the host,
+# Downloads act_runner, registers it as a host-executed self-hosted runner,
 # and starts it.
 #
 # The runner runs directly on the host (not in Docker) so it can access
@@ -8,7 +8,7 @@
 #
 # Prerequisites:
 #   - Gitea running at http://localhost:3000 (see install-gitea.sh)
-#   - .env file with RUNNER_TOKEN set
+#   - .env file with GITEA_RUNNER_TOKEN set
 #   - tofu, multipass, ansible installed on this host
 #
 # Usage:
@@ -19,14 +19,35 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
 # 	act_runner-0.4.1-linux-amd64
 ACT_RUNNER_VERSION="0.4.1"
-ACT_RUNNER_BIN="./act_runner"
+ACT_RUNNER_BIN="$SCRIPT_DIR/act_runner"
 GITEA_URL="http://localhost:3000"
 
+case "$(uname -s)" in
+  Darwin) RUNNER_OS="darwin" ;;
+  Linux)  RUNNER_OS="linux" ;;
+  *)
+    echo "ERROR: unsupported operating system: $(uname -s)"
+    exit 1
+    ;;
+esac
 
-if [[ -z "${GITEA_TOKEN:-}" ]]; then
-  echo "ERROR: GITEA_TOKEN is not set in the environment"
+case "$(uname -m)" in
+  arm64|aarch64) RUNNER_ARCH="arm64" ;;
+  x86_64|amd64)  RUNNER_ARCH="amd64" ;;
+  *)
+    echo "ERROR: unsupported CPU architecture: $(uname -m)"
+    exit 1
+    ;;
+esac
+
+
+if [[ -z "${GITEA_RUNNER_TOKEN:-}" ]]; then
+  echo "ERROR: GITEA_RUNNER_TOKEN is not set in the environment"
   exit 1
 fi
 
@@ -34,7 +55,7 @@ fi
 if [[ ! -f "$ACT_RUNNER_BIN" ]]; then
   echo "==> Downloading act_runner..."
   curl -sSfL \
-    "https://dl.gitea.com/act_runner/${ACT_RUNNER_VERSION}/act_runner-${ACT_RUNNER_VERSION}-darwin-arm64" \
+    "https://dl.gitea.com/act_runner/${ACT_RUNNER_VERSION}/act_runner-${ACT_RUNNER_VERSION}-${RUNNER_OS}-${RUNNER_ARCH}" \
     -o "$ACT_RUNNER_BIN"
   chmod +x "$ACT_RUNNER_BIN"
 fi
@@ -43,9 +64,9 @@ fi
 echo "==> Registering runner with Gitea at ${GITEA_URL}..."
 "$ACT_RUNNER_BIN" register \
   --instance "$GITEA_URL" \
-  --token    "$GITEA_TOKEN" \
+  --token    "$GITEA_RUNNER_TOKEN" \
   --name     "host-runner" \
-  --labels   "self-hosted,linux,multipass" \
+  --labels   "self-hosted:host,linux:host,multipass:host" \
   --no-interactive
 
 echo "==> Starting runner (Ctrl+C to stop)..."

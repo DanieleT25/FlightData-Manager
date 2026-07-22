@@ -117,7 +117,7 @@
       <header>Your Airports</header>
       
       <details style="margin-bottom: 2rem;">
-        <summary role="button" class="outline">Add Airport</summary>
+        <summary class="outline">Add Airport</summary>
         <form on:submit|preventDefault={addInterest} style="margin-top: 1rem;">
           <div class="grid">
             <label>

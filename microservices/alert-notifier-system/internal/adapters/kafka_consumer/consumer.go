@@ -17,6 +17,17 @@ type KafkaConsumer struct {
 	topic    string
 }
 
+// processMessage isolates payload decoding from Kafka polling so it can be
+// exercised with the real notifier application in integration tests.
+func (kc *KafkaConsumer) processMessage(ctx context.Context, payload []byte) error {
+	var alert domain.Notification
+	if err := json.Unmarshal(payload, &alert); err != nil {
+		return fmt.Errorf("decode notification: %w", err)
+	}
+
+	return kc.service.NotifyUser(ctx, alert)
+}
+
 func NewKafkaConsumer(brokerAddr, groupID, topic string, service ports.NotifierService) (*KafkaConsumer, error) {
 	config := &kafka.ConfigMap{
 		"bootstrap.servers":  brokerAddr,
@@ -73,7 +84,7 @@ func (kc *KafkaConsumer) Start(ctx context.Context) {
 
 				log.Printf("Sending notification to %s", alert.UserEmail)
 
-				err := kc.service.NotifyUser(ctx, alert)
+				err := kc.processMessage(ctx, e.Value)
 				if err != nil {
 					log.Printf("Failed to notify user: %v", err)
 				} else {

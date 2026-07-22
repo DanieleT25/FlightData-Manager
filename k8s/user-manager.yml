@@ -1,38 +1,39 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: data-collector
+  name: user-manager
   namespace: flight-data
+  labels:
+    app: user-manager
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: data-collector
+      app: user-manager
   template:
     metadata:
       labels:
-        app: data-collector
+        app: user-manager
     spec:
       containers:
-      - name: data-collector
-        image: data-collector
-        imagePullPolicy: Never
+      - name: user-manager
+        image: flight-data/user-manager:dev
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080
+        - containerPort: 50051
         envFrom:
         - configMapRef:
             name: app-env
         - secretRef:
             name: app-secrets
         env:
-        - name: USER_MANAGER_GRPC_HOST
-          value: "user-manager:50051"
         - name: SERVER_PORT
           value: "8080"
-        - name: KAFKA_TOPIC
-          value: "to-alert-system"
+        - name: GRPC_PORT
+          value: "50051"
         - name: SERVICE_NAME
-          value: "data-collector"
+          value: "user-manager"
         - name: NODE_NAME
           valueFrom:
             fieldRef:
@@ -43,17 +44,17 @@ spec:
           readOnly: true
         readinessProbe:
           httpGet:
-            path: /docs/data
+            path: /docs/user
             port: 8080
           initialDelaySeconds: 5
           periodSeconds: 10
         resources:
           requests:
-            memory: "128Mi"
-            cpu: "150m"
+            memory: "64Mi"
+            cpu: "100m"
           limits:
-            memory: "256Mi"
-            cpu: "500m"
+            memory: "128Mi"
+            cpu: "250m"
       volumes:
       - name: certs-volume
         secret:
@@ -62,11 +63,15 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: data-collector
+  name: user-manager
   namespace: flight-data
+  labels:
+    app: user-manager
 spec:
   ports:
   - port: 8080
     name: http
+  - port: 50051
+    name: grpc
   selector:
-    app: data-collector
+    app: user-manager

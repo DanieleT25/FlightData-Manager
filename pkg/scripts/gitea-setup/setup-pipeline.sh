@@ -29,6 +29,24 @@ REPO_NAME="FlightData-Manager"
 SSH_PRIVATE_KEY_FILE="./terraform/id_ed25519"
 SSH_PUBLIC_KEY_FILE="./terraform/id_ed25519.pub"
 
+set_secret() {
+  local name="$1"
+  local value="${!name:-}"
+
+  if [[ -z "$value" && "$name" != "REDIS_PASSWORD" ]]; then
+    echo "ERROR: ${name} is not set in the environment."
+    exit 1
+  fi
+
+  echo "==> Setting secret ${name}..."
+  curl -sSf \
+    "${AUTH[@]}" \
+    -X PUT "${API}/repos/${GITEA_USER}/${REPO_NAME}/actions/secrets/${name}" \
+    -d "{\"data\":$(printf %s "$value" | jq -Rs .)}" \
+    > /dev/null
+  echo "    Done."
+}
+
 if [[ -z "${GITEA_TOKEN:-}" ]]; then
   echo "ERROR: GITEA_TOKEN is not set."
   echo "       This must be a Personal Access Token (NOT the runner registration token)."
@@ -116,7 +134,15 @@ curl -sSf \
   > /dev/null
 echo "    Done."
 
-# ── 6. Print next steps ─────────────────────────────────────────────────────
+# ── 6. Set application runtime secrets ──────────────────────────────────────
+# REDIS_PASSWORD may intentionally be empty for the local development cluster.
+set_secret NEO4J_PASSWORD
+set_secret REDIS_PASSWORD
+set_secret OPENSKY_USER
+set_secret OPENSKY_PASSWORD
+set_secret GRAFANA_PASSWORD
+
+# ── 7. Print next steps ─────────────────────────────────────────────────────
 cat <<EOF
 
 ==> Setup complete!
@@ -131,4 +157,7 @@ Next steps (run from the repository root):
 
 Then watch the pipeline at:
   ${GITEA_URL}/${GITEA_USER}/${REPO_NAME}/actions
+
+For the first deployment, run the "Provision K8s Cluster" workflow and then
+the "Deploy to Kubernetes" workflow from the Actions page.
 EOF

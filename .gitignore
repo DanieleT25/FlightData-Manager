@@ -4,7 +4,16 @@
 pkg/certs/
 app-secrets.yml
 notes/
+note.md
 
 # Terraform & SSH keys
 terraform/id_ed25519
 terraform/id_ed25519.pub
+
+# Local Gitea runtime data
+pkg/scripts/gitea-setup/conf/
+pkg/scripts/gitea-setup/data/
+pkg/scripts/gitea-setup/log/
+pkg/scripts/gitea-setup/gitea
+pkg/scripts/gitea-setup/act_runner
+pkg/scripts/gitea-setup/.runner

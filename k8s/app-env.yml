@@ -9,4 +9,3 @@ data:
   KAFKA_BROKER: "kafka:9092"
   REDIS_ADDR: "redis:6379"
   REDIS_DB: "0"
-  OPENSKY_USER: "daniele25-api-client"

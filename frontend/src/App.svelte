@@ -23,8 +23,8 @@
     <ul>
       <li><strong>Flight Monitor</strong></li>
       {#if $userSession.isAuthenticated}
-        <li><a href="#" on:click|preventDefault={() => currentView = 'dashboard'} class={currentView === 'dashboard' ? 'secondary' : ''}>Dashboard</a></li>
-        <li><a href="#" on:click|preventDefault={() => currentView = 'profile'} class={currentView === 'profile' ? 'secondary' : ''}>Profile</a></li>
+        <li><a href="/dashboard" on:click|preventDefault={() => currentView = 'dashboard'} class={currentView === 'dashboard' ? 'secondary' : ''}>Dashboard</a></li>
+        <li><a href="/profile" on:click|preventDefault={() => currentView = 'profile'} class={currentView === 'profile' ? 'secondary' : ''}>Profile</a></li>
       {/if}
     </ul>
     <ul>

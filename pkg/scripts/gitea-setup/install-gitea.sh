@@ -13,9 +13,30 @@
 set -euo pipefail
 
 GITEA_VERSION="1.26.0"
-GITEA_BIN=$PWD/gitea
-GITEA_DATA=$PWD/data
-GITEA_CONF=$PWD/conf
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+case "$(uname -s)" in
+  Darwin) GITEA_OS="darwin" ;;
+  Linux)  GITEA_OS="linux" ;;
+  *)
+    echo "ERROR: unsupported operating system: $(uname -s)"
+    exit 1
+    ;;
+esac
+
+case "$(uname -m)" in
+  arm64|aarch64) GITEA_ARCH="arm64" ;;
+  x86_64|amd64)  GITEA_ARCH="amd64" ;;
+  *)
+    echo "ERROR: unsupported CPU architecture: $(uname -m)"
+    exit 1
+    ;;
+esac
+
+GITEA_BIN="$SCRIPT_DIR/gitea"
+GITEA_DATA="$SCRIPT_DIR/data"
+GITEA_CONF="$SCRIPT_DIR/conf"
 
 if [[ ! -d "$GITEA_DATA" ]]; then
   echo "==> Creating Gitea data directory at ./${GITEA_DATA} ..."
@@ -29,11 +50,10 @@ fi
 
 if [[ ! -f "$GITEA_BIN" ]]; then
   echo "==> Gitea binary not found at ./${GITEA_BIN}"
-  # https://dl.gitea.com/gitea/1.26.0/gitea-1.26.0-linux-amd64
-    URL="https://dl.gitea.com/gitea/${GITEA_VERSION}/gitea-${GITEA_VERSION}-linux-amd64"
-    echo "==> Downloading Gitea ${GITEA_VERSION}..."
-    curl "${URL}" -o gitea
-    chmod +x gitea
+    URL="https://dl.gitea.com/gitea/${GITEA_VERSION}/gitea-${GITEA_VERSION}-${GITEA_OS}-${GITEA_ARCH}"
+    echo "==> Downloading Gitea ${GITEA_VERSION} for ${GITEA_OS}/${GITEA_ARCH}..."
+    curl -fsSL "${URL}" -o "$GITEA_BIN"
+    chmod +x "$GITEA_BIN"
 else
   echo "==> Gitea binary already exists at ./${GITEA_BIN}, skipping download."
 fi

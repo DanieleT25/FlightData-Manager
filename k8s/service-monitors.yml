@@ -1,0 +1,31 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: user-manager
+  namespace: flight-data
+  labels:
+    release: kube-prom-stack
+spec:
+  selector:
+    matchLabels:
+      app: user-manager
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: data-collector
+  namespace: flight-data
+  labels:
+    release: kube-prom-stack
+spec:
+  selector:
+    matchLabels:
+      app: data-collector
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 15s
