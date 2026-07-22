@@ -39,6 +39,8 @@ jobs:
   configure:
     runs-on: self-hosted
     needs: provision
+    env:
+      ANSIBLE_PRIVATE_KEY_FILE: ${{ github.workspace }}/terraform/id_ed25519
 
     steps:
       - uses: actions/checkout@v4
