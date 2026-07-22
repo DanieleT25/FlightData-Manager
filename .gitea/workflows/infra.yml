@@ -30,7 +30,7 @@ jobs:
         run: tofu -chdir=terraform plan -out=tfplan
 
       - name: tofu apply
-        run: tofu -chdir=terraform apply -auto-approve tfplan
+        run: tofu -chdir=terraform apply -parallelism=1 -auto-approve tfplan
 
       - name: Show outputs
         run: tofu -chdir=terraform output
