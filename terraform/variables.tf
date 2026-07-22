@@ -21,7 +21,7 @@ variable "control_plane_cpus" {
 variable "control_plane_memory" {
   description = "RAM allocated to each control-plane node (kubeadm requires >= 2 GB)"
   type        = string
-  default     = "2G"
+  default     = "2.5G"
 }
 
 variable "control_plane_disk" {
@@ -35,7 +35,7 @@ variable "control_plane_disk" {
 variable "worker_count" {
   description = "Number of Kubernetes worker nodes"
   type        = number
-  default     = 2
+  default     = 1
 }
 
 variable "worker_cpus" {
