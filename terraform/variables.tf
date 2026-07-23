@@ -27,7 +27,7 @@ variable "control_plane_memory" {
 variable "control_plane_disk" {
   description = "Disk size for each control-plane node"
   type        = string
-  default     = "10G"
+  default     = "20G"
 }
 
 # ── Workers ────────────────────────────────────────────────────────────────────
@@ -53,7 +53,7 @@ variable "worker_memory" {
 variable "worker_disk" {
   description = "Disk size for each worker node"
   type        = string
-  default     = "10G"
+  default     = "20G"
 }
 
 # ── Ansible ────────────────────────────────────────────────────────────────────
