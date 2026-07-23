@@ -66,7 +66,7 @@ func (r *memoryUserRepository) DeleteIdempotencyKey(_ context.Context, clientIP,
 
 func TestApplicationRegistersAndDeletesUser(t *testing.T) {
 	repo := newMemoryUserRepository()
-	app := NewApplication(repo)
+	app := NewApplication(repo, repo)
 	ctx := context.Background()
 
 	user, err := app.RegisterUser(ctx, "MARIO@EXAMPLE.COM", "Password123!", "Mario", "Rossi", "1234", "12/30", "123")
@@ -91,7 +91,7 @@ func TestApplicationRegistersAndDeletesUser(t *testing.T) {
 
 func TestApplicationRejectsWrongPassword(t *testing.T) {
 	repo := newMemoryUserRepository()
-	app := NewApplication(repo)
+	app := NewApplication(repo, repo)
 	ctx := context.Background()
 
 	if _, err := app.RegisterUser(ctx, "mario@example.com", "Password123!", "Mario", "Rossi", "1234", "12/30", "123"); err != nil {

@@ -31,11 +31,13 @@ jobs:
         env:
           NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           OPENSKY_USER: ${{ secrets.OPENSKY_USER }}
           OPENSKY_PASSWORD: ${{ secrets.OPENSKY_PASSWORD }}
         run: |
           set -eu
           test -n "$NEO4J_PASSWORD"
+          test -n "$POSTGRES_PASSWORD"
           test -n "$OPENSKY_USER"
           test -n "$OPENSKY_PASSWORD"
 
@@ -82,6 +84,7 @@ jobs:
         env:
           NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           OPENSKY_USER: ${{ secrets.OPENSKY_USER }}
           OPENSKY_PASSWORD: ${{ secrets.OPENSKY_PASSWORD }}
         run: |
@@ -92,6 +95,7 @@ jobs:
           kubectl -n flight-data create secret generic app-secrets \
             --from-literal=NEO4J_PASSWORD="$NEO4J_PASSWORD" \
             --from-literal=REDIS_PASSWORD="$REDIS_PASSWORD" \
+            --from-literal=POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
             --from-literal=OPENSKY_USER="$OPENSKY_USER" \
             --from-literal=OPENSKY_PASSWORD="$OPENSKY_PASSWORD" \
             --dry-run=client -o yaml | kubectl apply -f -
@@ -127,6 +131,7 @@ jobs:
           set -euo pipefail
           export KUBECONFIG=~/k8s-config
           kubectl -n flight-data rollout status statefulset/redis --timeout=5m
+          kubectl -n flight-data rollout status statefulset/postgres --timeout=5m
           kubectl -n flight-data rollout status statefulset/neo4j --timeout=5m
           kubectl -n flight-data rollout status statefulset/kafka --timeout=5m
           for DEPLOYMENT in frontend user-manager data-collector alert-system alert-notifier nginx; do

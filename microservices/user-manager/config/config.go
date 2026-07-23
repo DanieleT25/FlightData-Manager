@@ -27,6 +27,33 @@ func GetRedisDB() int {
 	return dbIndex
 }
 
+func GetPostgresHost() string {
+	return getEnvironmentValue("POSTGRES_HOST")
+}
+
+func GetPostgresPort() string {
+	return getEnvironmentValue("POSTGRES_PORT")
+}
+
+func GetPostgresUser() string {
+	return getEnvironmentValue("POSTGRES_USER")
+}
+
+func GetPostgresPassword() string {
+	return getEnvironmentValue("POSTGRES_PASSWORD")
+}
+
+func GetPostgresDB() string {
+	return getEnvironmentValue("POSTGRES_DB")
+}
+
+func GetPostgresSSLMode() string {
+	if val := os.Getenv("POSTGRES_SSLMODE"); val != "" {
+		return val
+	}
+	return "disable"
+}
+
 func GetServerPort() string {
 	return getEnvironmentValue("SERVER_PORT")
 }

@@ -9,3 +9,8 @@ data:
   KAFKA_BROKER: "kafka:9092"
   REDIS_ADDR: "redis:6379"
   REDIS_DB: "0"
+  POSTGRES_HOST: "postgres"
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: "user_manager"
+  POSTGRES_DB: "user_manager"
+  POSTGRES_SSLMODE: "disable"

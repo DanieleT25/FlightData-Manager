@@ -13,12 +13,14 @@ import (
 )
 
 type Application struct {
-	db ports.UserRepository
+	db    ports.UserRepository
+	cache ports.IdempotencyRepository
 }
 
-func NewApplication(db ports.UserRepository) *Application {
+func NewApplication(db ports.UserRepository, cache ports.IdempotencyRepository) *Application {
 	return &Application{
-		db: db,
+		db:    db,
+		cache: cache,
 	}
 }
 
@@ -69,13 +71,13 @@ func (a *Application) DeleteUser(ctx context.Context, email string, password str
 }
 
 func (a *Application) CheckIdempotencyUser(ctx context.Context, ip, msgID string) (bool, *domain.User, error) {
-	return a.db.CheckIdempotency(ctx, ip, msgID)
+	return a.cache.CheckIdempotency(ctx, ip, msgID)
 }
 
 func (a *Application) SaveIdempotencyResponseUser(ctx context.Context, ip, mesgID string, user *domain.User) error {
-	return a.db.SaveIdempotencyResponse(ctx, ip, mesgID, user)
+	return a.cache.SaveIdempotencyResponse(ctx, ip, mesgID, user)
 }
 
 func (a *Application) DeleteIdempotencyKeyUser(ctx context.Context, ip, msgID string) error {
-	return a.db.DeleteIdempotencyKey(ctx, ip, msgID)
+	return a.cache.DeleteIdempotencyKey(ctx, ip, msgID)
 }

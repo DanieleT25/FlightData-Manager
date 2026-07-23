@@ -24,6 +24,12 @@ func main() {
 	redisAddr := config.GetRedisAddr()
 	redisPass := config.GetRedisPassword()
 	redisDB := config.GetRedisDB()
+	postgresHost := config.GetPostgresHost()
+	postgresPort := config.GetPostgresPort()
+	postgresUser := config.GetPostgresUser()
+	postgresPassword := config.GetPostgresPassword()
+	postgresDB := config.GetPostgresDB()
+	postgresSSLMode := config.GetPostgresSSLMode()
 	httpPort := config.GetServerPort()
 	grpcPort := config.GetGRPCPort()
 	serviceName := config.GetServiceName()
@@ -35,15 +41,26 @@ func main() {
 
 	monitor := observability.NewMonitor(serviceName, nodeName)
 
+	log.Printf("Connecting to Postgres at %s:%s (DB: %s)...", postgresHost, postgresPort, postgresDB)
+
+	postgresDSN := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
+		postgresUser, postgresPassword, postgresHost, postgresPort, postgresDB, postgresSSLMode)
+
+	userRepo, err := repository.NewPostgresRepository(ctx, postgresDSN)
+	if err != nil {
+		log.Fatalf("CRITICAL: Failed to connect to Postgres: %v", err)
+	}
+	log.Println("Connected to Postgres successfully.")
+
 	log.Printf("Connecting to Redis at %s (DB: %d)...", redisAddr, redisDB)
 
-	userRepo, err := repository.NewRedisRepository(ctx, redisAddr, redisPass, redisDB)
+	idempotencyRepo, err := repository.NewRedisRepository(ctx, redisAddr, redisPass, redisDB)
 	if err != nil {
 		log.Fatalf("CRITICAL: Failed to connect to Redis: %v", err)
 	}
 	log.Println("Connected to Redis successfully.")
 
-	userApplication := api.NewApplication(userRepo)
+	userApplication := api.NewApplication(userRepo, idempotencyRepo)
 
 	httpAdapter := huma_api.NewAPIHandler(userApplication)
 	grpcAdapter := grpc_server.NewGrpcAdapter(userApplication, monitor)
@@ -59,7 +76,7 @@ func main() {
 
 	humaConfig := huma.DefaultConfig("User Manager API", "1.0.0")
 	humaConfig.Components.SecuritySchemes = map[string]*huma.SecurityScheme{}
-	humaConfig.Info.Description = `This **User Manager Microservice** is a core component of the distributed flight monitoring platform, responsible for handling the complete user lifecycle. Built with **Go** and following the **Hexagonal Architecture** (Ports & Adapters), it features robust, production-ready capabilities including **Bcrypt password hashing**, secure persistence via **Redis** and enforcement of the **At-Most-Once** policy using an Idempotency Key mechanism to guarantee reliable registration. `
+	humaConfig.Info.Description = `This **User Manager Microservice** is a core component of the distributed flight monitoring platform, responsible for handling the complete user lifecycle. Built with **Go** and following the **Hexagonal Architecture** (Ports & Adapters), it features robust, production-ready capabilities including **Bcrypt password hashing**, durable persistence via **PostgreSQL** and enforcement of the **At-Most-Once** policy using a **Redis**-backed Idempotency Key mechanism to guarantee reliable registration. `
 	humaConfig.DocsPath = "/docs/user"
 	humaConfig.OpenAPIPath = "/schemas/user"
 

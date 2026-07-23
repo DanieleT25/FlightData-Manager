@@ -5,11 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
-	"github.com/DanieleT25/FlightData-Manager/microservices/user-manager/internal/application/core/apperrors"
 	"github.com/DanieleT25/FlightData-Manager/microservices/user-manager/internal/application/core/domain"
 	"github.com/redis/go-redis/v9"
 )
@@ -52,68 +50,6 @@ func (r *RedisRepository) generateKey(email string) string {
 
 func (r *RedisRepository) generateIdempotencyKey(clientIP, messageID string) string {
 	return fmt.Sprintf("idempotency:%s:%s", hashIP(clientIP), messageID)
-}
-
-func (r *RedisRepository) Save(ctx context.Context, user *domain.User) error {
-	data, err := json.Marshal(user)
-	if err != nil {
-		return fmt.Errorf("failed to encode user: %w", err)
-	}
-
-	key := "user:" + user.Email
-
-	success, err := r.client.SetNX(ctx, key, data, 0).Result()
-	if err != nil {
-		return fmt.Errorf("redis connection failed: %w", err)
-	}
-
-	if !success {
-		return apperrors.ErrUserAlreadyExists
-	}
-
-	return nil
-}
-
-func (r *RedisRepository) Get(ctx context.Context, email string) (*domain.User, error) {
-	key := r.generateKey(email)
-
-	val, err := r.client.Get(ctx, key).Result()
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return nil, apperrors.ErrUserNotFound
-		}
-		return nil, fmt.Errorf("failed to get from redis: %w", err)
-	}
-
-	var user domain.User
-	err = json.Unmarshal([]byte(val), &user)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode user data: %w", err)
-	}
-
-	return &user, nil
-}
-
-func (r *RedisRepository) Delete(ctx context.Context, email string) error {
-	key := r.generateKey(email)
-
-	err := r.client.Del(ctx, key).Err()
-	if err != nil {
-		return fmt.Errorf("failed to delete user: %w", err)
-	}
-
-	return nil
-}
-
-func (r *RedisRepository) Exists(ctx context.Context, email string) (bool, error) {
-	key := r.generateKey(email)
-
-	count, err := r.client.Exists(ctx, key).Result()
-	if err != nil {
-		return false, fmt.Errorf("failed to check existence: %w", err)
-	}
-
-	return count > 0, nil
 }
 
 func (r *RedisRepository) CheckIdempotency(ctx context.Context, clientIP string, messageID string) (bool, *domain.User, error) {
