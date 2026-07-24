@@ -2,7 +2,7 @@
 
 <img src="./images/FlightData-Manager_logo.png" ref="FlightData-Manager logo">
 
-_Project for "Distributed Systems and Big Data" course of Computer Engineering, extended for "Cloud Systems"_
+_Project for "Distributed Systems and Big Data" course of Computer Engineering, extended for "Cloud Systems" course of Computer Science_
 
 _[Daniele Tambone](https://www.linkedin.com/in/daniele-tambone-b5733616a/) @ Dept of Math and Computer Science, University of Catania_
 
