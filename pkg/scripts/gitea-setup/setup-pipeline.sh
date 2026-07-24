@@ -138,6 +138,7 @@ echo "    Done."
 # REDIS_PASSWORD may intentionally be empty for the local development cluster.
 set_secret NEO4J_PASSWORD
 set_secret REDIS_PASSWORD
+set_secret POSTGRES_PASSWORD
 set_secret OPENSKY_USER
 set_secret OPENSKY_PASSWORD
 set_secret GRAFANA_PASSWORD
