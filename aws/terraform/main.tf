@@ -25,8 +25,10 @@ data "aws_availability_zones" "available" {
 # before anything billable is provisioned. It stays useful afterwards: the
 # console shows every resource carrying the Project tag as one group.
 resource "aws_resourcegroups_group" "project" {
-  name        = local.name
-  description = "All resources of ${var.project_name} (${var.environment})"
+  name = local.name
+  # Only [\s a-z A-Z 0-9 _ . -] is accepted here — no parentheses, colons or
+  # equals signs, and the API rejects the whole call if any slip in.
+  description = "All resources of ${var.project_name} in environment ${var.environment}"
 
   resource_query {
     query = jsonencode({
