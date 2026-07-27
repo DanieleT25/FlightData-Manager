@@ -1,0 +1,63 @@
+name: AWS — Destroy
+
+# Manual trigger only, never automatic. This is the way every working session
+# ends: AWS bills per second, and from phase 2 onwards the infrastructure costs
+# money for as long as it exists.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "destroy" to confirm'
+        required: true
+        type: string
+
+permissions:
+  id-token: write # required to request the OIDC token
+  contents: read
+
+env:
+  AWS_REGION: eu-south-1
+  TF_STATE_KEY: aws/terraform.tfstate
+
+jobs:
+  destroy:
+    name: Destroy AWS infrastructure
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Check confirmation
+        if: inputs.confirm != 'destroy'
+        run: |
+          echo "::error::Confirmation failed — type 'destroy' to run this workflow."
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      # Exchanges the job's OIDC token for credentials that expire in about an
+      # hour. No AWS access key is stored anywhere in this repository.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: opentofu/setup-opentofu@v1
+
+      - name: tofu init
+        run: |
+          tofu -chdir=aws/terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=${TF_STATE_KEY}" \
+            -backend-config="region=${AWS_REGION}"
+
+      - name: tofu destroy
+        run: tofu -chdir=aws/terraform destroy -auto-approve
+
+      - name: Confirm nothing is left
+        run: |
+          echo "### Remaining resources in state" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tofu -chdir=aws/terraform state list >> "$GITHUB_STEP_SUMMARY" || echo "(none)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

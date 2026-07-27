@@ -10,6 +10,14 @@ note.md
 terraform/id_ed25519
 terraform/id_ed25519.pub
 
+# OpenTofu local artifacts
+# .terraform.lock.hcl is intentionally NOT ignored: it pins provider versions
+# and checksums, so the runner resolves exactly what was validated locally.
+**/.terraform/
+*.tfplan
+*.tfstate
+*.tfstate.backup
+
 # Local Gitea runtime data
 pkg/scripts/gitea-setup/conf/
 pkg/scripts/gitea-setup/data/

@@ -50,11 +50,13 @@ The system ships with two deployment tracks:
 | [`nginx.conf`](nginx.conf) | API Gateway configuration |
 | [`docker-compose.yml`](docker-compose.yml) | Local multi-container stack (no Kubernetes) |
 | [`terraform/`](terraform) | OpenTofu IaC for the local Multipass VMs |
+| [`aws/terraform/`](aws/terraform) | OpenTofu IaC for the AWS deployment |
+| [`.github/workflows/`](.github/workflows) | AWS CI/CD pipelines (infrastructure, destroy) |
 | [`ansible/`](ansible) | Playbooks that bootstrap the kubeadm cluster |
 | [`k8s/`](k8s) | Kubernetes manifests for the application and its data stores |
 | [`k8sadmin/`](k8sadmin) | Metrics Server and kube-prometheus-stack install scripts |
 | [`.gitea/workflows/`](.gitea/workflows) | CI/CD pipelines (provision, deploy, destroy) |
-| [`pkg/`](pkg) | Shared proto definitions, TLS cert scripts, Gitea setup scripts |
+| [`pkg/`](pkg) | Shared proto definitions, TLS cert scripts, Gitea and AWS setup scripts |
 | [`schema/`](schema) | Architecture diagrams (local and AWS) |
 | [`docs/`](docs) | Setup guides, demo walkthrough, and the full project report |
 | [`images/`](images) | Images used in the README |
@@ -63,5 +65,6 @@ The system ships with two deployment tracks:
 
 - [Local Setup (Docker Compose)](docs/local-setup.md) — prerequisites, configuration, running and testing the system locally
 - [Kubernetes Deployment](docs/kubernetes-deployment.md) — provisioning and deploying the local Gitea/OpenTofu/Multipass/Ansible/Kubernetes stack
+- [AWS Deployment](docs/aws-deployment.md) — cost model, and deploying to AWS with GitHub Actions, OIDC and OpenTofu
 - [API Demo & Walkthrough](docs/demo.md) — a guided tour of the main API flows
 - [Project Report](docs/Flight_Data_Manager.pdf) — full written report
