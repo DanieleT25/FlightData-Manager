@@ -8,7 +8,9 @@ locals {
   }
 }
 
-data "aws_caller_identity" "current" {}
+# No aws_caller_identity data source here: reading it prints the account id in
+# the plan log, and this repository's workflow logs are public. Nothing in this
+# configuration needs it — the account id only ever appears inside secrets.
 
 data "aws_region" "current" {}
 
