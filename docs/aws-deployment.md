@@ -221,3 +221,55 @@ aws s3 ls "s3://flightdata-manager-tofu-state-$(aws sts get-caller-identity --qu
 ```
 
 Run **AWS — Destroy** and check the summary reports an empty state list. At that point the pipeline is proven and phase 2 can add real infrastructure.
+
+---
+
+## Phase 2 — Network
+
+First phase that costs money. Everything here exists only while the infrastructure is up, so the working rule from now on is: **run the destroy workflow at the end of every session**.
+
+### Layout
+
+Two availability zones, three subnet tiers in each:
+
+| Tier | CIDR (zone a / zone b) | Route to the internet | Will host |
+|---|---|---|---|
+| public | `10.0.0.0/24` / `10.0.1.0/24` | Internet Gateway | NAT Gateway, public load balancer |
+| private app | `10.0.16.0/20` / `10.0.32.0/20` | NAT Gateway | EKS nodes |
+| private data | `10.0.48.0/24` / `10.0.49.0/24` | **none** | RDS, ElastiCache |
+
+The application tier is a `/20` because the EKS VPC CNI gives every *pod* a real VPC address, not just every node — a `/24` runs out quickly. The other two tiers hold a handful of interfaces each.
+
+The data tier has no default route at all: those databases are reachable from inside the VPC and can reach nothing outside it. It is one less path to worry about, and it keeps database traffic off the NAT Gateway.
+
+### The shared NAT Gateway
+
+A NAT Gateway costs about `$0.045/hour` plus `$0.045/GB` processed, and since February 2024 its public IPv4 address adds about `$0.005/hour`. One per zone — the textbook layout — would double that standing cost for the whole life of the project.
+
+Both zones therefore share a single gateway, placed in the first zone. The consequence is explicit: **an outage of the first zone also cuts outbound traffic for the second one**. Zone redundancy still protects the compute and database tiers, but not egress. In production each zone gets its own gateway; here the saving is worth more than the redundancy.
+
+### S3 gateway endpoint
+
+Free, and it removes a recurring charge: container image layers pulled from ECR are actually served from S3, and everything crossing a NAT Gateway is billed per GB. Routing S3 traffic through the endpoint keeps image pulls off the gateway entirely.
+
+### Cost
+
+| Resource | ~USD/hour |
+|---|---|
+| NAT Gateway | 0.045 |
+| Public IPv4 of the NAT Gateway | 0.005 |
+| VPC, subnets, route tables, Internet Gateway, S3 endpoint | free |
+| **Total** | **~0.05** |
+
+About `$1.20` per day if left running, `$0.15` for a three-hour session.
+
+### Verify
+
+After `apply`, the outputs list the VPC, the three subnet groups and the NAT address. From the console, **VPC → Resource map** draws the whole topology: it should show two zones, six subnets, and every private subnet routed to the same gateway.
+
+```bash
+aws ec2 describe-subnets --region eu-south-1 \
+  --filters "Name=tag:Project,Values=flightdata-manager" \
+  --query 'Subnets[].{Name:Tags[?Key==`Name`]|[0].Value,CIDR:CidrBlock,AZ:AvailabilityZone}' \
+  --output table
+```

@@ -176,6 +176,31 @@ aws s3api put-public-access-block \
     "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
 echo "    Done."
 
+# Versioning keeps a revision of the state for every apply, and those revisions
+# are never removed on their own. The two conditions below are combined with
+# AND: a revision is deleted only once it is older than 30 days *and* is no
+# longer among the most recent ones. Nothing is removed inside the 30-day
+# window, so recent rollbacks always stay possible.
+echo "==> Setting the lifecycle policy on old state revisions..."
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket "$BUCKET" \
+  --lifecycle-configuration '{
+    "Rules": [
+      {
+        "ID": "expire-old-state-revisions",
+        "Status": "Enabled",
+        "Filter": { "Prefix": "" },
+        "NoncurrentVersionExpiration": {
+          "NoncurrentDays": 30,
+          "NewerNoncurrentVersions": 10
+        },
+        "Expiration": { "ExpiredObjectDeleteMarker": true },
+        "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 7 }
+      }
+    ]
+  }'
+echo "    Done."
+
 # NOTE: no DynamoDB lock table is created. OpenTofu >= 1.10 locks state natively
 # in S3 via `use_lockfile = true` in the backend block; the `dynamodb_table`
 # option is deprecated. If your OpenTofu is older, create the table with:
