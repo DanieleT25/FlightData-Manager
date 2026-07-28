@@ -39,7 +39,7 @@ resource "aws_vpc" "main" {
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
 
-  tags = { Name = local.name }
+  tags = { Name = "${local.name}-igw" }
 }
 
 resource "aws_subnet" "public" {
@@ -84,7 +84,7 @@ resource "aws_route_table_association" "public" {
 resource "aws_eip" "nat" {
   domain = "vpc"
 
-  tags = { Name = "${local.name}-nat" }
+  tags = { Name = "${local.name}-nat-eip" }
 }
 
 resource "aws_nat_gateway" "main" {
@@ -95,7 +95,7 @@ resource "aws_nat_gateway" "main" {
   # cannot infer that from the arguments alone.
   depends_on = [aws_internet_gateway.main]
 
-  tags = { Name = local.name }
+  tags = { Name = "${local.name}-nat" }
 }
 
 # ── Private application tier ──────────────────────────────────────────────────
