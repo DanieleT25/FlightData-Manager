@@ -41,3 +41,21 @@ output "nat_public_ip" {
   description = "Address every outbound connection from the private subnets appears to come from"
   value       = aws_eip.nat.public_ip
 }
+
+# Endpoints are printed, credentials are not: the workflow summary is public.
+# The password lives only in Parameter Store, readable with
+#   aws ssm get-parameter --name /flightdata-manager/lab/postgres/password --with-decryption
+output "postgres_endpoint" {
+  description = "PostgreSQL endpoint, reachable only from inside the VPC"
+  value       = aws_db_instance.postgres.endpoint
+}
+
+output "redis_endpoint" {
+  description = "Redis endpoint, reachable only from inside the VPC"
+  value       = "${aws_elasticache_cluster.redis.cache_nodes[0].address}:${aws_elasticache_cluster.redis.cache_nodes[0].port}"
+}
+
+output "ssm_parameter_prefix" {
+  description = "Parameter Store path holding every connection detail of the data layer"
+  value       = local.ssm_prefix
+}

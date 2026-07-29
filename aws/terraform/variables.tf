@@ -16,6 +16,24 @@ variable "environment" {
   default     = "lab"
 }
 
+variable "postgres_instance_class" {
+  description = "RDS instance class — db.t4g.micro is covered by the free tier"
+  type        = string
+  default     = "db.t4g.micro"
+}
+
+variable "postgres_storage_gb" {
+  description = "RDS allocated storage in GB — the free tier covers 20"
+  type        = number
+  default     = 20
+}
+
+variable "redis_node_type" {
+  description = "ElastiCache node type — cache.t3.micro is covered by the free tier"
+  type        = string
+  default     = "cache.t3.micro"
+}
+
 variable "vpc_cidr" {
   description = "Address range of the VPC, split into three subnet tiers per zone"
   type        = string

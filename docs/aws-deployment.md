@@ -273,3 +273,87 @@ aws ec2 describe-subnets --region eu-south-1 \
   --query 'Subnets[].{Name:Tags[?Key==`Name`]|[0].Value,CIDR:CidrBlock,AZ:AvailabilityZone}' \
   --output table
 ```
+
+---
+
+## Phase 3 — Data layer
+
+Fills the isolated `data` subnets with managed equivalents of the StatefulSets the local cluster runs:
+
+| Local (Kubernetes) | AWS | Holds |
+|---|---|---|
+| Redis StatefulSet | ElastiCache, `cache.t3.micro` | idempotency keys of user-manager |
+| PostgreSQL StatefulSet | RDS, `db.t4g.micro` | user records of user-manager |
+| Neo4j StatefulSet | **Neo4j Aura**, outside AWS | flights, airports, interests |
+
+14 resources: two security groups, the two engines with their subnet groups, a generated password and seven Parameter Store entries.
+
+### Neo4j stays outside
+
+AWS has no managed Neo4j, and running it in the cluster would need more memory than a lab node group can spare. Aura's free instance is enough — with two caveats worth knowing: it is **deleted after 30 days of inactivity**, and the free plan has no IP filtering, so the credentials are the only thing protecting it.
+
+Those credentials are written to Parameter Store **by hand**, once:
+
+```bash
+aws ssm put-parameter --name "/flightdata-manager/lab/neo4j/uri"      --type String       --value "neo4j+s://<id>.databases.neo4j.io" --overwrite --region eu-south-1
+aws ssm put-parameter --name "/flightdata-manager/lab/neo4j/user"     --type String       --value "<user>"     --overwrite --region eu-south-1
+aws ssm put-parameter --name "/flightdata-manager/lab/neo4j/password" --type SecureString --value '<password>' --overwrite --region eu-south-1
+```
+
+They never pass through OpenTofu, so they never reach the state file.
+
+### Secrets and the state file
+
+The RDS master password is different: OpenTofu generates it, which means it **is** written to the state in clear text. That is inherent to how Terraform and OpenTofu work, not a flaw in this configuration, and it is why the state bucket is private, encrypted and versioned. The same value is published to Parameter Store as a `SecureString` so that the deployment can read it without anyone ever handling it.
+
+Parameter Store rather than Secrets Manager: both would work, but Secrets Manager costs $0.40 per secret per month while the standard tier of Parameter Store is free, and the only feature lost — automatic rotation — is not used here.
+
+### Free-tier sizing
+
+| Setting | Value | Reason |
+|---|---|---|
+| RDS class | `db.t4g.micro` | free tier, 750 h/month |
+| RDS storage | 20 GB `gp2` | free tier limit |
+| Multi-AZ | off | not covered by the free tier |
+| Backup retention | 0 days | the environment is destroyed after every session; backups would only add storage cost and slow the teardown |
+| Final snapshot | skipped | otherwise every destroy leaves a billable snapshot behind |
+| ElastiCache | `cache.t3.micro`, 1 node | free tier |
+| Redis AUTH | off | needs a replication group and a larger node; access is restricted by the security group and by the subnet having no route out |
+
+If the free tier does not apply, the two engines together add roughly `$0.04/hour`, taking the total to about `$0.09/hour`. Check `Billing → Cost Explorer` after the first session to see which case applies to this account.
+
+### Divergence from the target architecture
+
+The reference diagram in `schema/` draws RDS and ElastiCache in **both** availability zones. That notation does not mean two independent databases: it depicts a Multi-AZ deployment — one logical database with a standby replica in the second zone, behind a single endpoint — and, for Redis, a replication group with a primary and a replica.
+
+This deployment runs **one instance of each** instead, for the same reason the two zones share one NAT Gateway: the free tier covers neither an RDS standby nor a second cache node, so high availability would cost about `$0.072/hour` where the current setup costs nothing.
+
+What is actually given up: if the first availability zone fails, the database and the cache become unavailable until AWS restores it, whereas a Multi-AZ deployment would fail over automatically in a minute or two. Data itself is not at risk — RDS storage is replicated inside the zone, and the Redis contents are idempotency keys that regenerate on their own.
+
+Restoring the diagram's design is deliberately kept cheap:
+
+- **RDS** — set `multi_az = true`. One line, and AWS builds the standby on the next apply.
+- **Redis** — replace `aws_elasticache_cluster` with `aws_elasticache_replication_group`, which is a different resource with a different schema, and add a replica in the second zone.
+
+The zone-redundant part of the network — six subnets across two zones — is already in place, so nothing else would need to change.
+
+### Expect a slow apply
+
+RDS takes five to ten minutes to become available and ElastiCache about five, so this apply is far longer than the previous ones. The destroy is slow for the same reason.
+
+### Verify
+
+Both engines are unreachable from outside the VPC by design, so there is nothing to connect to from a laptop — that is the expected result, not a failure. What can be checked:
+
+```bash
+aws rds describe-db-instances --region eu-south-1 \
+  --query 'DBInstances[].{Id:DBInstanceIdentifier,Status:DBInstanceStatus,Public:PubliclyAccessible,MultiAZ:MultiAZ}' --output table
+
+aws elasticache describe-cache-clusters --region eu-south-1 --show-cache-node-info \
+  --query 'CacheClusters[].{Id:CacheClusterId,Status:CacheClusterStatus,Node:CacheNodeType}' --output table
+
+aws ssm get-parameters-by-path --path "/flightdata-manager/lab" --recursive --region eu-south-1 \
+  --query 'Parameters[].Name' --output table
+```
+
+The last one should list ten entries: seven written by OpenTofu and the three Neo4j ones added by hand.
