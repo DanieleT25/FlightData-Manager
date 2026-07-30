@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/DanieleT25/FlightData-Manager/microservices/user-manager/config"
@@ -43,8 +45,18 @@ func main() {
 
 	log.Printf("Connecting to Postgres at %s:%s (DB: %s)...", postgresHost, postgresPort, postgresDB)
 
-	postgresDSN := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
-		postgresUser, postgresPassword, postgresHost, postgresPort, postgresDB, postgresSSLMode)
+	// Built through net/url rather than by string concatenation: a generated
+	// password may legitimately contain ':', '?', '#', '[' or '%', all of which
+	// carry syntactic meaning inside a URL and would otherwise be misread — a
+	// '[' is taken as the start of an IPv6 literal, and the whole DSN fails to
+	// parse. url.UserPassword percent-encodes the credentials for us.
+	postgresDSN := (&url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(postgresUser, postgresPassword),
+		Host:     net.JoinHostPort(postgresHost, postgresPort),
+		Path:     postgresDB,
+		RawQuery: url.Values{"sslmode": {postgresSSLMode}}.Encode(),
+	}).String()
 
 	userRepo, err := repository.NewPostgresRepository(ctx, postgresDSN)
 	if err != nil {
