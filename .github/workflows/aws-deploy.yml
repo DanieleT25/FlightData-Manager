@@ -1,0 +1,207 @@
+name: AWS — Deploy
+
+# Builds the images, pushes them to ECR and rolls the application onto the
+# cluster. Separate from aws-infra.yml on purpose: changing a microservice must
+# not touch the infrastructure, and changing the infrastructure must not
+# redeploy the application.
+#
+# Manual only. The cluster does not exist between sessions, so a push trigger
+# would just produce a failed run for every commit.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-south-1
+  CLUSTER: flightdata-manager-lab
+  NAMESPACE: flight-data
+
+concurrency:
+  group: aws-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the test suite
+        run: go test ./...
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Registry URLs embed the account id and this repository's logs are
+      # public, so the value is masked before it can appear in any command echo.
+      - name: Resolve the registry
+        id: registry
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          echo "::add-mask::$ACCOUNT"
+          echo "url=${ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com" >> "$GITHUB_OUTPUT"
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push images
+        env:
+          REGISTRY: ${{ steps.registry.outputs.url }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_SHA}"
+
+          build() { # <repository> <dockerfile> <context>
+            docker build -t "${REGISTRY}/flightdata-manager/$1:${TAG}" -f "$2" "$3"
+            docker push "${REGISTRY}/flightdata-manager/$1:${TAG}"
+          }
+
+          build user-manager   microservices/user-manager/Dockerfile           .
+          build data-collector microservices/data-collector/Dockerfile         .
+          build alert-system   microservices/alert-system/Dockerfile           .
+          build alert-notifier microservices/alert-notifier-system/Dockerfile  .
+          build frontend       frontend/Dockerfile                             frontend
+
+      - name: Connect kubectl to the cluster
+        run: aws eks update-kubeconfig --name "$CLUSTER" --region "$AWS_REGION"
+
+      - name: Generate the mTLS certificates
+        run: bash pkg/scripts/gen_certs.sh
+
+      # Every runtime value comes from Parameter Store — endpoints and
+      # credentials alike, for AWS services and for the two external ones.
+      # GitHub only holds what is needed to reach AWS in the first place
+      # (AWS_ROLE_ARN, TF_STATE_BUCKET); once inside, the account is the single
+      # source of configuration. That also means this pipeline could be replaced
+      # without having to move any secret.
+      - name: Build the runtime configuration from Parameter Store
+        run: |
+          set -euo pipefail
+          param() { aws ssm get-parameter --name "/flightdata-manager/lab/$1" --with-decryption --query 'Parameter.Value' --output text; }
+
+          PG_HOST=$(param postgres/host); PG_PORT=$(param postgres/port)
+          PG_USER=$(param postgres/user); PG_DB=$(param postgres/db)
+          REDIS_HOST=$(param redis/host); REDIS_PORT=$(param redis/port)
+          NEO4J_URI=$(param neo4j/uri);   NEO4J_USER=$(param neo4j/user)
+
+          OPENSKY_USER=$(param opensky/user)
+          PG_PASSWORD=$(param postgres/password);      echo "::add-mask::$PG_PASSWORD"
+          NEO4J_PASSWORD=$(param neo4j/password);      echo "::add-mask::$NEO4J_PASSWORD"
+          OPENSKY_PASSWORD=$(param opensky/password);  echo "::add-mask::$OPENSKY_PASSWORD"
+
+          kubectl apply -f k8s/namespace.yml
+
+          # Non-secret values. sslmode is `require` rather than the `disable`
+          # used locally: RDS serves TLS out of the box, and the connection
+          # crosses subnets.
+          kubectl -n "$NAMESPACE" create configmap app-env \
+            --from-literal=KAFKA_BROKER="kafka:9092" \
+            --from-literal=REDIS_ADDR="${REDIS_HOST}:${REDIS_PORT}" \
+            --from-literal=REDIS_DB="0" \
+            --from-literal=POSTGRES_HOST="$PG_HOST" \
+            --from-literal=POSTGRES_PORT="$PG_PORT" \
+            --from-literal=POSTGRES_USER="$PG_USER" \
+            --from-literal=POSTGRES_DB="$PG_DB" \
+            --from-literal=POSTGRES_SSLMODE="require" \
+            --from-literal=NEO4J_URI="$NEO4J_URI" \
+            --from-literal=NEO4J_USER="$NEO4J_USER" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          # REDIS_PASSWORD is deliberately empty: the ElastiCache node has no
+          # AUTH, being reachable only from the application subnets.
+          kubectl -n "$NAMESPACE" create secret generic app-secrets \
+            --from-literal=POSTGRES_PASSWORD="$PG_PASSWORD" \
+            --from-literal=NEO4J_PASSWORD="$NEO4J_PASSWORD" \
+            --from-literal=REDIS_PASSWORD="" \
+            --from-literal=OPENSKY_USER="$OPENSKY_USER" \
+            --from-literal=OPENSKY_PASSWORD="$OPENSKY_PASSWORD" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl -n "$NAMESPACE" create secret generic grpc-certs \
+            --from-file=pkg/certs/ca-cert.pem \
+            --from-file=pkg/certs/server-cert.pem \
+            --from-file=pkg/certs/server-key.pem \
+            --from-file=pkg/certs/client-cert.pem \
+            --from-file=pkg/certs/client-key.pem \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl -n "$NAMESPACE" create secret generic nginx-certs \
+            --from-file=pkg/certs/nginx-cert.pem \
+            --from-file=pkg/certs/nginx-key.pem \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl -n "$NAMESPACE" create configmap nginx-config \
+            --from-file=nginx.conf=k8s/nginx.conf \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      # Only kafka and nginx have AWS-specific manifests; everything else is
+      # shared with the local deployment, so a change to a microservice applies
+      # to both tracks without having to keep two copies in step. The three
+      # StatefulSets of the local stack are simply never applied — RDS,
+      # ElastiCache and Aura replace them — and service-monitors.yml is skipped
+      # because it needs the Prometheus operator CRDs, which phase 6 installs.
+      - name: Apply the manifests
+        env:
+          REGISTRY: ${{ steps.registry.outputs.url }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_SHA}"
+
+          kubectl apply -f aws/k8s/
+          kubectl apply \
+            -f k8s/user-manager.yml \
+            -f k8s/data-collector.yml \
+            -f k8s/alert-system.yml \
+            -f k8s/alert-notifier.yml \
+            -f k8s/frontend.yml
+
+          for SVC in user-manager data-collector alert-system alert-notifier frontend; do
+            kubectl -n "$NAMESPACE" set image "deployment/${SVC}" \
+              "${SVC}=${REGISTRY}/flightdata-manager/${SVC}:${TAG}"
+          done
+          kubectl -n "$NAMESPACE" rollout restart deployment/nginx
+
+      - name: Wait for the rollout
+        run: |
+          set -euo pipefail
+          kubectl -n "$NAMESPACE" rollout status statefulset/kafka --timeout=5m
+          for D in user-manager data-collector alert-system alert-notifier frontend nginx; do
+            kubectl -n "$NAMESPACE" rollout status "deployment/${D}" --timeout=5m
+          done
+
+      - name: Publish the entry point
+        run: |
+          set -euo pipefail
+          {
+            echo '### Pods'
+            echo '```'
+            kubectl -n "$NAMESPACE" get pods -o wide
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # The load balancer takes a couple of minutes to get a name.
+          for _ in $(seq 1 30); do
+            LB=$(kubectl -n "$NAMESPACE" get svc nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            [ -n "$LB" ] && break
+            sleep 10
+          done
+
+          {
+            echo '### Entry point'
+            echo "https://${LB:-<still provisioning>}/docs/user"
+            echo ''
+            echo 'Before destroying the infrastructure, delete the workloads —'
+            echo 'this load balancer belongs to Kubernetes, not to OpenTofu:'
+            echo '```'
+            echo 'kubectl delete svc --all --all-namespaces'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

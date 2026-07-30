@@ -116,7 +116,7 @@ if [[ "$FOUND" -eq 0 ]]; then
   echo "  - the OpenTofu state bucket"
   echo "  - the IAM role and the GitHub OIDC provider"
   echo "  - the cost budget"
-  echo "  - the three Neo4j parameters under /${PROJECT}/"
+  echo "  - the Neo4j and OpenSky parameters under /${PROJECT}/"
 else
   echo "Something above is still up. If it is a load balancer or a volume, it was"
   echo "created by Kubernetes rather than by OpenTofu — delete the workloads first:"

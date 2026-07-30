@@ -1,0 +1,87 @@
+# AWS variant of k8s/nginx.yml. The Deployment is identical; only the Service
+# changes, from NodePort to LoadBalancer.
+#
+# NodePort works locally because the Multipass VMs have addresses reachable from
+# the host. Here the nodes sit in private subnets with no public address, so a
+# node port would be unreachable from anywhere outside the VPC. A LoadBalancer
+# Service makes the AWS cloud controller provision a network load balancer in
+# the public subnets — the ones tagged `kubernetes.io/role/elb` back in phase 2,
+# which is what that tag was for.
+#
+# IMPORTANT: this load balancer is created by Kubernetes, not by OpenTofu, so
+# `tofu destroy` neither knows about it nor removes it, and its network
+# interfaces keep the VPC from being deleted. Delete the workloads first:
+#
+#   kubectl delete svc --all --all-namespaces
+#
+# `pkg/scripts/aws-setup/check-orphans.sh` looks for exactly this.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: flight-data
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.27-alpine
+        ports:
+        - containerPort: 80
+        - containerPort: 443
+        volumeMounts:
+        - name: config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+        - name: certs
+          mountPath: /etc/nginx/certs
+          readOnly: true
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "20m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+      volumes:
+      - name: config
+        configMap:
+          name: nginx-config
+      - name: certs
+        secret:
+          secretName: nginx-certs
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  namespace: flight-data
+  annotations:
+    # A network load balancer rather than the classic one the cloud controller
+    # would pick by default: it is cheaper, faster to provision and works at
+    # layer 4, which is all that is needed since nginx terminates TLS itself.
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+spec:
+  type: LoadBalancer
+  selector:
+    app: nginx
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  - name: https
+    port: 443
+    targetPort: 443

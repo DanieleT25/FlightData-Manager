@@ -58,7 +58,7 @@ There are therefore three independent ways out, in decreasing order of convenien
 bash pkg/scripts/aws-setup/check-orphans.sh
 ```
 
-It asks the service APIs directly, covers both what OpenTofu manages and what it cannot see, and exits non-zero if anything is still up. What it deliberately ignores is the handful of resources that must survive between sessions: the state bucket, the IAM role and OIDC provider, the budget, and the three Neo4j parameters.
+It asks the service APIs directly, covers both what OpenTofu manages and what it cannot see, and exits non-zero if anything is still up. What it deliberately ignores is the handful of resources that must survive between sessions: the state bucket, the IAM role and OIDC provider, the budget, and the five hand-written parameters for Neo4j and OpenSky.
 
 ## Phases
 
@@ -67,10 +67,11 @@ It asks the service APIs directly, covers both what OpenTofu manages and what it
 | **0** | AWS account, OIDC, state bucket, budget alerts | no |
 | 1 | `aws/terraform/` skeleton, `plan`/`apply`/`destroy` workflows | no |
 | 2 | VPC, subnets, Internet Gateway, single NAT Gateway | NAT |
-| 3 | RDS Postgres, ElastiCache Redis, Neo4j Aura, Secrets Manager | free tier |
-| 4 | ECR, EKS + node group, adapted `k8s/` manifests | EKS + nodes |
-| 5 | S3 + CloudFront frontend, API Gateway, Cognito | low |
-| 6 | Observability, documentation, final diagram | no |
+| 3 | RDS Postgres, ElastiCache Redis, Neo4j Aura, Parameter Store | free tier |
+| 4 | ECR, EKS cluster and node group | EKS + nodes |
+| 5 | Application deployment: images, manifests, load balancer | + load balancer |
+| 6 | S3 + CloudFront frontend, API Gateway, Cognito | low |
+| 7 | Observability, documentation, final diagram | no |
 
 ---
 
@@ -317,15 +318,26 @@ Fills the isolated `data` subnets with managed equivalents of the StatefulSets t
 
 AWS has no managed Neo4j, and running it in the cluster would need more memory than a lab node group can spare. Aura's free instance is enough — with two caveats worth knowing: it is **deleted after 30 days of inactivity**, and the free plan has no IP filtering, so the credentials are the only thing protecting it.
 
-Those credentials are written to Parameter Store **by hand**, once:
+Those credentials are written to Parameter Store **by hand**, once, together with the OpenSky ones — both are credentials for external services that OpenTofu does not create and therefore cannot generate:
 
 ```bash
-aws ssm put-parameter --name "/flightdata-manager/lab/neo4j/uri"      --type String       --value "neo4j+s://<id>.databases.neo4j.io" --overwrite --region eu-south-1
-aws ssm put-parameter --name "/flightdata-manager/lab/neo4j/user"     --type String       --value "<user>"     --overwrite --region eu-south-1
-aws ssm put-parameter --name "/flightdata-manager/lab/neo4j/password" --type SecureString --value '<password>' --overwrite --region eu-south-1
+aws ssm put-parameter --name "/flightdata-manager/lab/neo4j/uri"        --type String       --value "neo4j+s://<id>.databases.neo4j.io" --overwrite --region eu-south-1
+aws ssm put-parameter --name "/flightdata-manager/lab/neo4j/user"       --type String       --value "<user>"        --overwrite --region eu-south-1
+aws ssm put-parameter --name "/flightdata-manager/lab/neo4j/password"   --type SecureString --value '<password>'    --overwrite --region eu-south-1
+aws ssm put-parameter --name "/flightdata-manager/lab/opensky/user"     --type String       --value "<client-id>"   --overwrite --region eu-south-1
+aws ssm put-parameter --name "/flightdata-manager/lab/opensky/password" --type SecureString --value '<client-secret>' --overwrite --region eu-south-1
 ```
 
-They never pass through OpenTofu, so they never reach the state file.
+They never pass through OpenTofu, so they never reach the state file. They also survive `destroy`, unlike the seven parameters OpenTofu generates.
+
+### Where each secret belongs
+
+| Store | Holds | Why |
+|---|---|---|
+| **GitHub Secrets** | `AWS_ROLE_ARN`, `TF_STATE_BUCKET` | only what is needed to *reach* AWS — without them no pipeline could read anything else |
+| **Parameter Store** | every runtime value: endpoints, database credentials, Neo4j and OpenSky credentials | once inside the account, it is the single source of configuration |
+
+The dividing line is not "AWS service or external service" — Neo4j and OpenSky are both external and both live in Parameter Store. It is *bootstrap versus runtime*. A consequence worth having: the deployment pipeline could be replaced tomorrow without moving a single secret.
 
 ### Secrets and the state file
 
@@ -381,7 +393,7 @@ aws ssm get-parameters-by-path --path "/flightdata-manager/lab" --recursive --re
   --query 'Parameters[].Name' --output table
 ```
 
-The last one should list ten entries: seven written by OpenTofu and the three Neo4j ones added by hand.
+The last one should list twelve entries: seven written by OpenTofu, plus the three Neo4j and two OpenSky ones added by hand.
 
 ---
 
@@ -475,3 +487,66 @@ aws eks associate-access-policy --cluster-name flightdata-manager-lab --region e
   --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
   --access-scope type=cluster
 ```
+
+---
+
+## Phase 5 — Deploying the application
+
+Builds the five images, publishes them to ECR and rolls the application onto the cluster. A separate workflow from `aws-infra.yml`: changing a microservice must not touch the infrastructure, and changing the infrastructure must not redeploy the application.
+
+```
+Actions → AWS — Deploy → Run workflow
+```
+
+It is manual only. The cluster does not exist between sessions, so a push trigger would produce a failed run for every commit.
+
+### Only two manifests are AWS-specific
+
+The application manifests are shared with the local deployment, because images and configuration are injected at deploy time by both pipelines. Duplicating them would only create two copies to keep in step. `aws/k8s/` therefore holds just the two that genuinely differ:
+
+| Manifest | Local | AWS |
+|---|---|---|
+| `kafka.yml` | `hostPath` on the node labelled for local storage | `emptyDir` |
+| `nginx.yml` | `NodePort` on the Multipass VM addresses | `LoadBalancer` |
+
+Everything else — `user-manager`, `data-collector`, `alert-system`, `alert-notifier`, `frontend` — is applied straight from `k8s/`. The three StatefulSets of the local stack are never applied at all: RDS, ElastiCache and Aura replace them. `service-monitors.yml` is skipped too, since it needs the Prometheus operator CRDs that phase 7 installs.
+
+**Why `emptyDir` for Kafka.** Managed nodes are disposable, so a `hostPath` would quietly lose its contents whenever the node group replaced an instance. The alternative, an EBS volume through a `PersistentVolumeClaim`, needs the CSI driver and — worse — creates a volume OpenTofu does not know about, which survives `tofu destroy`, keeps being billed and blocks the VPC from being deleted. The cost of `emptyDir` is that undelivered messages are lost if the pod moves, which is acceptable for a pipeline where messages are produced and consumed within seconds.
+
+**Why `LoadBalancer` for nginx.** The nodes sit in private subnets with no public address, so a node port would be unreachable from outside the VPC. A `LoadBalancer` Service makes the cloud controller provision a network load balancer in the public subnets — the ones tagged `kubernetes.io/role/elb` in phase 2, which is what that tag was for.
+
+### Where the configuration comes from
+
+Nothing about the data layer is repeated in the workflow. It reads Parameter Store, where phase 3 published the endpoints and credentials, and turns them into a ConfigMap and a Secret — the same shape the local pipeline builds from Gitea secrets, so the manifests do not care which deployment they are running in.
+
+The only value coming from GitHub is the OpenSky credential pair, which belongs to no AWS resource. The account id is masked with `::add-mask::` before any registry URL is echoed, since the logs are public.
+
+One deliberate difference from the local stack: `POSTGRES_SSLMODE` is `require` rather than `disable`. RDS serves TLS out of the box and the connection crosses subnets.
+
+### The teardown rule becomes mandatory
+
+The load balancer is created by **Kubernetes**, not by OpenTofu, so `tofu destroy` neither knows about it nor removes it — and its network interfaces stop the VPC from being deleted, leaving a billable resource behind. From this phase on, every session ends with:
+
+```bash
+kubectl delete svc --all --all-namespaces   # first
+# then the AWS — Destroy workflow
+bash pkg/scripts/aws-setup/check-orphans.sh # confirms
+```
+
+### A known limitation: OpenSky is unreachable from AWS
+
+`opensky-network.org` answers in a quarter of a second from a home connection and times out from inside the cluster, while other hosts answer normally from the same pods — the signature of a cloud-provider IP filter, which public APIs commonly apply to discourage scraping.
+
+It does not prevent the deployment. `data-collector` only calls OpenSky once a user has registered an interest, so the API, user management, the gRPC link between services and the whole Kafka alert chain work exactly as they do locally. Only the retrieval of live flight data fails, and only in the cloud track.
+
+### Verify
+
+The run summary prints the pod list and the load balancer address. From a laptop:
+
+```bash
+kubectl -n flight-data get pods -o wide
+LB=$(kubectl -n flight-data get svc nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+curl -k "https://${LB}/docs/user"
+```
+
+The certificate is self-signed by `gen_certs.sh`, hence `-k`. The load balancer needs two or three minutes after the rollout before it answers.

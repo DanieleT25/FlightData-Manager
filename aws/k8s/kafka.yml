@@ -1,0 +1,92 @@
+# AWS variant of k8s/kafka.yml. Two differences, both about storage.
+#
+# The local manifest pins Kafka to the worker labelled for local storage and
+# keeps its log directory in a hostPath. Neither works here: managed nodes carry
+# no such label, and they are disposable — a hostPath would silently lose its
+# contents the moment the node group replaced an instance.
+#
+# The alternative would be an EBS volume through a PersistentVolumeClaim, which
+# needs the EBS CSI driver and, more importantly, creates a volume that OpenTofu
+# does not know about: it would survive `tofu destroy`, keep being billed and
+# block the VPC from being deleted. An emptyDir avoids all of that.
+#
+# What this costs: if the Kafka pod is rescheduled, undelivered messages are
+# lost. Acceptable here, because the alert pipeline is event-driven — messages
+# are produced and consumed within seconds, nothing accumulates — and the whole
+# environment is destroyed at the end of every session anyway.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: flight-data
+spec:
+  serviceName: "kafka"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      enableServiceLinks: false
+      containers:
+      - name: kafka
+        image: confluentinc/cp-kafka:7.4.0
+        ports:
+        - containerPort: 9092
+        - containerPort: 29093
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "768Mi"
+            cpu: "750m"
+        env:
+        - name: KAFKA_HEAP_OPTS
+          value: "-Xmx512M -Xms512M"
+        - name: KAFKA_NODE_ID
+          value: "1"
+        - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+          value: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"
+        - name: KAFKA_ADVERTISED_LISTENERS
+          value: "PLAINTEXT://kafka:9092"
+        - name: KAFKA_LISTENERS
+          value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:29093"
+        - name: KAFKA_PROCESS_ROLES
+          value: "broker,controller"
+        - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+          value: "1@kafka:29093"
+        - name: KAFKA_CONTROLLER_LISTENER_NAMES
+          value: "CONTROLLER"
+        - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+          value: "1"
+        - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+          value: "1"
+        - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+          value: "1"
+        - name: CLUSTER_ID
+          value: "MkU3OEVBNTcwNTJENDM2Qk"
+        volumeMounts:
+        - name: kafka-data
+          mountPath: /var/lib/kafka/data
+      volumes:
+      - name: kafka-data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: flight-data
+spec:
+  ports:
+  - port: 9092
+    name: plaintext
+  - port: 29093
+    name: controller
+  clusterIP: None
+  selector:
+    app: kafka
