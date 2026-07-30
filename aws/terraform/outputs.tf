@@ -59,3 +59,21 @@ output "ssm_parameter_prefix" {
   description = "Parameter Store path holding every connection detail of the data layer"
   value       = local.ssm_prefix
 }
+
+output "cluster_name" {
+  description = "EKS cluster name — feed it to: aws eks update-kubeconfig --name <this> --region eu-south-1"
+  value       = aws_eks_cluster.main.name
+}
+
+output "cluster_version" {
+  description = "Kubernetes version served by the control plane"
+  value       = aws_eks_cluster.main.version
+}
+
+# The registry URL embeds the account id, which must not reach a public log, so
+# only the repository paths are published. The full URL is rebuilt at deploy
+# time from the caller's own identity.
+output "ecr_repository_names" {
+  description = "ECR repositories, one per service"
+  value       = [for r in aws_ecr_repository.service : r.name]
+}

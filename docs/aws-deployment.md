@@ -35,6 +35,31 @@ That is roughly **$4.50 per day left running**, against **~$0.60 for a three-hou
 
 Two consequences shape the phases below: the budget alarm is created *before* any billable resource, and the destroy workflow is written *before* the deploy workflow.
 
+## Tearing down without GitHub
+
+The destroy workflow is convenient, not essential. If Actions is queued, degraded or unreachable, the same teardown runs from a laptop, because none of the three things it needs lives on GitHub: the state is in S3, the credentials come from the local AWS CLI, and OpenTofu is installed locally.
+
+```bash
+tofu -chdir=aws/terraform init -reconfigure \
+  -backend-config="bucket=flightdata-manager-tofu-state-<account-id>" \
+  -backend-config="key=aws/terraform.tfstate" \
+  -backend-config="region=eu-south-1"
+
+tofu -chdir=aws/terraform destroy
+```
+
+There are therefore three independent ways out, in decreasing order of convenience: the workflow, the commands above, and deleting resources by hand in the console — where the `flightdata-manager-lab` resource group lists everything carrying the project tag, which is what it exists for.
+
+### Confirming the account is actually empty
+
+`tofu destroy` removes what OpenTofu created. It cannot remove what it never knew about — a load balancer or a volume created by Kubernetes itself, or anything left by an interrupted run. And the console resource group is an eventually consistent index that keeps listing deleted resources for hours, so it cannot settle the question either.
+
+```bash
+bash pkg/scripts/aws-setup/check-orphans.sh
+```
+
+It asks the service APIs directly, covers both what OpenTofu manages and what it cannot see, and exits non-zero if anything is still up. What it deliberately ignores is the handful of resources that must survive between sessions: the state bucket, the IAM role and OIDC provider, the budget, and the three Neo4j parameters.
+
 ## Phases
 
 | Phase | Contents | Billable |
@@ -357,3 +382,96 @@ aws ssm get-parameters-by-path --path "/flightdata-manager/lab" --recursive --re
 ```
 
 The last one should list ten entries: seven written by OpenTofu and the three Neo4j ones added by hand.
+
+---
+
+## Phase 4 — Registry and Kubernetes
+
+Replaces the kubeadm cluster that Ansible builds on the Multipass VMs with a managed one. 18 resources: five ECR repositories with their lifecycle policies, two IAM roles, the cluster and a node group.
+
+### Why EKS rather than kubeadm on EC2
+
+The course material provisions EC2 instances and runs the same three Ansible playbooks used locally. That path is cheaper and reuses work already done, but it makes the cloud track a copy of the local one on rented hardware. Choosing EKS keeps the contrast that justifies having two tracks at all — one where every layer is operated by hand, one where the platform is delegated — and stays consistent with the managed RDS and ElastiCache already adopted in phase 3.
+
+The Ansible playbooks are not wasted: they remain the heart of the local deployment.
+
+### Node sizing
+
+Two constraints decide this, and neither is the workload.
+
+**The account's plan restricts which EC2 types may be launched at all.** Under the AWS free plan, `t3.medium` and larger are refused outright — the console says *"not eligible under the Free Plan"* — and a managed node group is nothing but EC2 instances, so asking for one would fail. What remains is `t3.micro`, `t3.small` and `c7i-flex.large`.
+
+**The pod ceiling follows the network interfaces, not the memory**, because the VPC CNI gives every pod a real VPC address: `(interfaces × (addresses each − 1)) + 2`.
+
+| Type | vCPU | RAM | Pod ceiling | Available in |
+|---|---|---|---|---|
+| `t3.micro` | 2 | 1 GB | 4 — two already go to DaemonSets | a, b |
+| **`t3.small`** | 2 | 2 GB | **11** | **a, b** |
+| `c7i-flex.large` | 2 | 4 GB | 29 | **b, c only** |
+
+`c7i-flex.large` has the most room but does not exist in `eu-south-1a`, so adopting it would mean either moving the whole network to zones b and c or running both nodes in one zone — giving up the only place where this deployment has real redundancy. It also costs about `$0.10/hour` against `$0.024`.
+
+Two `t3.small` fit with room to spare. Summing the resource requests of the existing manifests, minus the three components that no longer run in the cluster (Neo4j moved to Aura, PostgreSQL to RDS, Redis to ElastiCache):
+
+| | Needed | Available on 2 × `t3.small` |
+|---|---|---|
+| Pods | 10 (8 application + CoreDNS) | 18 free of 22, after DaemonSets |
+| Memory | ~960 Mi | 3144 Mi allocatable |
+| CPU | ~1.1 vCPU | ~3.8 vCPU |
+
+EKS reserves roughly 475 Mi per node for the kubelet and the eviction threshold, which is already subtracted above.
+
+### The version is a cost decision
+
+An EKS control plane costs `$0.10/hour` while its Kubernetes version is under standard support, and **`$0.60/hour` once it is not** — six times as much for an identical cluster. Versions move to extended support silently, so check before pinning:
+
+```bash
+aws eks describe-cluster-versions --region eu-south-1 \
+  --query 'clusterVersions[?status==`STANDARD_SUPPORT`].clusterVersion' --output text
+```
+
+### Cost
+
+| Resource | ~USD/hour |
+|---|---|
+| EKS control plane | 0.10 |
+| 2 × `t3.small` | 0.05 |
+| NAT Gateway + public IPv4 | 0.05 |
+| RDS + ElastiCache | 0 to 0.04 |
+| **Total** | **~0.20–0.24** |
+
+About `$0.65` for a three-hour session, but `$5` for a forgotten day. From here the destroy discipline stops being a formality.
+
+### A teardown trap worth knowing
+
+OpenTofu destroys only what it created. A Kubernetes `Service` of type `LoadBalancer` makes **Kubernetes** create a load balancer that OpenTofu never sees — and that load balancer holds network interfaces in the subnets, so `tofu destroy` fails on the VPC with a `DependencyViolation` and leaves a billable resource behind.
+
+The rule that avoids it: **delete the workloads before destroying the infrastructure.**
+
+```bash
+kubectl delete svc --all --all-namespaces
+```
+
+It does not apply yet, since no application is deployed, but it will from the next phase.
+
+### Verify
+
+```bash
+aws eks describe-cluster --name flightdata-manager-lab --region eu-south-1 \
+  --query 'cluster.{Stato:status,Versione:version,Endpoint:endpoint}' --output table
+
+aws eks update-kubeconfig --name flightdata-manager-lab --region eu-south-1
+kubectl get nodes -o wide
+```
+
+`update-kubeconfig` only works for a principal with an access entry on the cluster. The GitHub Actions role gets one automatically as its creator; to use `kubectl` from a laptop, grant one to the local user:
+
+```bash
+ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+aws eks create-access-entry --cluster-name flightdata-manager-lab --region eu-south-1 \
+  --principal-arn "arn:aws:iam::${ACCOUNT}:user/dev-admin"
+aws eks associate-access-policy --cluster-name flightdata-manager-lab --region eu-south-1 \
+  --principal-arn "arn:aws:iam::${ACCOUNT}:user/dev-admin" \
+  --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+  --access-scope type=cluster
+```
