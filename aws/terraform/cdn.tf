@@ -1,4 +1,10 @@
-# Static frontend on S3, served through CloudFront.
+# Static frontend on S3, served through CloudFront. Gated behind var.enable_cdn
+# — see that variable for why: new AWS accounts need manual verification before
+# CloudFront will create anything, and this account has not gone through it yet.
+# `count = var.enable_cdn ? 1 : 0` on every resource here means a plan with the
+# default `false` creates none of them, and none of the rest of the
+# infrastructure depends on this file, so EKS, the data layer and the network
+# apply cleanly regardless.
 #
 # The Svelte application is a Vite build — a few hundred kilobytes of HTML, CSS
 # and JavaScript with no server-side logic — so serving it from a container is
@@ -25,13 +31,17 @@
 # this distribution demonstrates the CDN tier of the target architecture.
 
 resource "random_id" "frontend_bucket" {
+  count = var.enable_cdn ? 1 : 0
+
   byte_length = 4
 }
 
 # Bucket names are globally unique. A random suffix is used rather than the
 # account id, which must not appear in a public workflow log.
 resource "aws_s3_bucket" "frontend" {
-  bucket = "${local.name}-frontend-${random_id.frontend_bucket.hex}"
+  count = var.enable_cdn ? 1 : 0
+
+  bucket = "${local.name}-frontend-${random_id.frontend_bucket[0].hex}"
 
   # The bucket holds build output and nothing irreplaceable, and every teardown
   # must succeed without a manual emptying step first.
@@ -44,7 +54,9 @@ resource "aws_s3_bucket" "frontend" {
 # Control, so the only way to the files is through the distribution — which also
 # means the HTTPS redirect and the caching cannot be bypassed.
 resource "aws_s3_bucket_public_access_block" "frontend" {
-  bucket = aws_s3_bucket.frontend.id
+  count = var.enable_cdn ? 1 : 0
+
+  bucket = aws_s3_bucket.frontend[0].id
 
   block_public_acls       = true
   block_public_policy     = false # the policy below grants CloudFront, not the public
@@ -53,6 +65,8 @@ resource "aws_s3_bucket_public_access_block" "frontend" {
 }
 
 resource "aws_cloudfront_origin_access_control" "frontend" {
+  count = var.enable_cdn ? 1 : 0
+
   name                              = "${local.name}-frontend"
   origin_access_control_origin_type = "s3"
   signing_behavior                  = "always"
@@ -60,10 +74,14 @@ resource "aws_cloudfront_origin_access_control" "frontend" {
 }
 
 data "aws_cloudfront_cache_policy" "optimized" {
+  count = var.enable_cdn ? 1 : 0
+
   name = "Managed-CachingOptimized"
 }
 
 resource "aws_cloudfront_distribution" "frontend" {
+  count = var.enable_cdn ? 1 : 0
+
   enabled             = true
   is_ipv6_enabled     = true
   default_root_object = "index.html"
@@ -75,9 +93,9 @@ resource "aws_cloudfront_distribution" "frontend" {
   price_class = "PriceClass_100"
 
   origin {
-    domain_name              = aws_s3_bucket.frontend.bucket_regional_domain_name
+    domain_name              = aws_s3_bucket.frontend[0].bucket_regional_domain_name
     origin_id                = "s3-frontend"
-    origin_access_control_id = aws_cloudfront_origin_access_control.frontend.id
+    origin_access_control_id = aws_cloudfront_origin_access_control.frontend[0].id
   }
 
   default_cache_behavior {
@@ -85,7 +103,7 @@ resource "aws_cloudfront_distribution" "frontend" {
     viewer_protocol_policy = "redirect-to-https"
     allowed_methods        = ["GET", "HEAD", "OPTIONS"]
     cached_methods         = ["GET", "HEAD"]
-    cache_policy_id        = data.aws_cloudfront_cache_policy.optimized.id
+    cache_policy_id        = data.aws_cloudfront_cache_policy.optimized[0].id
     compress               = true
   }
 
@@ -120,9 +138,11 @@ resource "aws_cloudfront_distribution" "frontend" {
 # Grants read access to this distribution alone — not to the public, and not to
 # any other distribution in any account.
 data "aws_iam_policy_document" "frontend_bucket" {
+  count = var.enable_cdn ? 1 : 0
+
   statement {
     actions   = ["s3:GetObject"]
-    resources = ["${aws_s3_bucket.frontend.arn}/*"]
+    resources = ["${aws_s3_bucket.frontend[0].arn}/*"]
 
     principals {
       type        = "Service"
@@ -132,28 +152,36 @@ data "aws_iam_policy_document" "frontend_bucket" {
     condition {
       test     = "StringEquals"
       variable = "AWS:SourceArn"
-      values   = [aws_cloudfront_distribution.frontend.arn]
+      values   = [aws_cloudfront_distribution.frontend[0].arn]
     }
   }
 }
 
 resource "aws_s3_bucket_policy" "frontend" {
-  bucket = aws_s3_bucket.frontend.id
-  policy = data.aws_iam_policy_document.frontend_bucket.json
+  count = var.enable_cdn ? 1 : 0
+
+  bucket = aws_s3_bucket.frontend[0].id
+  policy = data.aws_iam_policy_document.frontend_bucket[0].json
 
   depends_on = [aws_s3_bucket_public_access_block.frontend]
 }
 
 # Published the same way as every other runtime value, so the deploy workflow
-# reads them from Parameter Store instead of receiving them from OpenTofu.
+# reads them from Parameter Store instead of receiving them from OpenTofu. The
+# deploy workflow checks for their existence before using them, so a disabled
+# CDN does not break the rest of the deployment.
 resource "aws_ssm_parameter" "frontend_bucket" {
+  count = var.enable_cdn ? 1 : 0
+
   name  = "${local.ssm_prefix}/frontend/bucket"
   type  = "String"
-  value = aws_s3_bucket.frontend.id
+  value = aws_s3_bucket.frontend[0].id
 }
 
 resource "aws_ssm_parameter" "frontend_distribution" {
+  count = var.enable_cdn ? 1 : 0
+
   name  = "${local.ssm_prefix}/frontend/distribution"
   type  = "String"
-  value = aws_cloudfront_distribution.frontend.id
+  value = aws_cloudfront_distribution.frontend[0].id
 }

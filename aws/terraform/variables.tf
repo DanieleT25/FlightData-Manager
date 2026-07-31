@@ -81,6 +81,19 @@ variable "redis_node_type" {
   default     = "cache.t3.micro"
 }
 
+variable "enable_cdn" {
+  description = "Whether to create the S3 + CloudFront frontend"
+  type        = bool
+
+  # False until AWS confirms the account. CloudFront distributions are gated
+  # behind manual account verification on new accounts — apply fails with:
+  #   AccessDenied: Your account must be verified before you can add new
+  #   CloudFront resources. To verify your account, please contact AWS Support.
+  # Flip to true once that verification has gone through; nothing else in this
+  # configuration depends on it.
+  default = false
+}
+
 variable "vpc_cidr" {
   description = "Address range of the VPC, split into three subnet tiers per zone"
   type        = string

@@ -176,12 +176,18 @@ jobs:
 
       # The same Vite build that goes into the frontend container is also
       # uploaded to S3, so the CDN and the in-cluster copy never diverge.
+      #
+      # Skipped when var.enable_cdn is false: the /frontend/bucket parameter
+      # then does not exist, which is treated as "no CDN this session" rather
+      # than a failure — the in-cluster frontend is unaffected either way.
       - name: Publish the frontend to the CDN
         run: |
           set -euo pipefail
-          param() { aws ssm get-parameter --name "/flightdata-manager/lab/$1" --query 'Parameter.Value' --output text; }
-          BUCKET=$(param frontend/bucket)
-          DIST=$(param frontend/distribution)
+          if ! BUCKET=$(aws ssm get-parameter --name "/flightdata-manager/lab/frontend/bucket" --query 'Parameter.Value' --output text 2>/dev/null); then
+            echo "No CDN this session (var.enable_cdn=false in aws/terraform) — skipping."
+            exit 0
+          fi
+          DIST=$(aws ssm get-parameter --name "/flightdata-manager/lab/frontend/distribution" --query 'Parameter.Value' --output text)
 
           npm --prefix frontend ci
           npm --prefix frontend run build

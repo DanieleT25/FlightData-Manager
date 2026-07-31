@@ -61,8 +61,8 @@ output "ssm_parameter_prefix" {
 }
 
 output "frontend_url" {
-  description = "Public address of the static frontend — the interface renders, but its API calls need a load balancer this account cannot create"
-  value       = "https://${aws_cloudfront_distribution.frontend.domain_name}"
+  description = "Public address of the static frontend — null while var.enable_cdn is false. The interface renders when it exists, but its API calls need a load balancer this account cannot create"
+  value       = var.enable_cdn ? "https://${aws_cloudfront_distribution.frontend[0].domain_name}" : null
 }
 
 output "cluster_name" {
