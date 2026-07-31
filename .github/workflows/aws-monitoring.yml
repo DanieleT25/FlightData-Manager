@@ -1,0 +1,90 @@
+name: AWS — Monitoring
+
+# Installs the observability stack into the cluster: Metrics Server, then
+# kube-prometheus-stack, then the ServiceMonitor objects that tell Prometheus
+# where the application exposes its metrics.
+#
+# Separate from aws-deploy.yml on purpose. The Helm release changes far less
+# often than the application, and `helm upgrade --wait` takes minutes — running
+# it on every code deployment would slow the loop down for nothing. It mirrors
+# how the local track keeps k8sadmin/ apart from the application pipeline.
+#
+# The same two scripts the local cluster uses are reused unchanged: they take
+# their input from KUBECONFIG and GRAFANA_PASSWORD, so nothing about them is
+# specific to Multipass.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-south-1
+  CLUSTER: flightdata-manager-lab
+
+concurrency:
+  group: aws-monitoring
+  cancel-in-progress: false
+
+jobs:
+  install:
+    name: Install the observability stack
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: azure/setup-helm@v4
+
+      - name: Connect kubectl to the cluster
+        run: aws eks update-kubeconfig --name "$CLUSTER" --region "$AWS_REGION"
+
+      # EKS does not ship Metrics Server, so `kubectl top` and any resource-based
+      # autoscaling have nothing to read without it. The script also patches in
+      # --kubelet-insecure-tls, which Multipass needed; on EKS the flag is
+      # harmless because the API server already trusts the kubelet certificates.
+      - name: Install Metrics Server
+        run: bash k8sadmin/metrics-server/install.sh
+
+      - name: Install kube-prometheus-stack
+        run: |
+          set -euo pipefail
+          GRAFANA_PASSWORD=$(aws ssm get-parameter \
+            --name "/flightdata-manager/lab/grafana/password" \
+            --with-decryption --query 'Parameter.Value' --output text)
+          echo "::add-mask::$GRAFANA_PASSWORD"
+          export GRAFANA_PASSWORD
+          bash k8sadmin/monitoring/install.sh
+
+      # Skipped by aws-deploy.yml because these objects need the CRDs that the
+      # Helm chart installs. Now that they exist, Prometheus can be told where
+      # the two instrumented services publish their metrics.
+      - name: Register the application with Prometheus
+        run: kubectl apply -f k8s/service-monitors.yml
+
+      - name: Publish how to reach Grafana
+        run: |
+          set -euo pipefail
+          {
+            echo '### Monitoring'
+            echo '```'
+            kubectl -n monitoring get pods
+            echo '```'
+            echo '### Grafana'
+            echo 'The nodes are private and the plan allows no load balancer, so Grafana is reached the same way as the application:'
+            echo '```bash'
+            echo "aws eks update-kubeconfig --name ${CLUSTER} --region ${AWS_REGION}"
+            echo 'kubectl -n monitoring port-forward svc/kube-prom-stack-grafana 3001:80'
+            echo '# http://localhost:3001 — user admin, password:'
+            echo 'aws ssm get-parameter --name /flightdata-manager/lab/grafana/password --with-decryption --query Parameter.Value --output text'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

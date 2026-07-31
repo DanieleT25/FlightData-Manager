@@ -45,9 +45,16 @@ variable "node_instance_type" {
 }
 
 variable "node_count" {
-  description = "Number of worker nodes, one per availability zone"
+  description = "Number of worker nodes"
   type        = number
-  default     = 2
+
+  # Three rather than two because of pods, not memory. Each t3.small admits 11
+  # pods; two nodes give 22, of which 14 are already taken by the application,
+  # CoreDNS and the two DaemonSets — and kube-prometheus-stack plus
+  # metrics-server need 8. That is exactly the number left, with no room for the
+  # scheduler to distribute them unevenly. A third node adds 11 more slots for
+  # about $0.024/hour, and stays within the 8 vCPU quota even while rolling.
+  default = 3
 
   validation {
     # Standard on-demand instances are capped at 8 vCPUs in this account and

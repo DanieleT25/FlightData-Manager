@@ -10,7 +10,7 @@ The cloud deployment mirrors the [local Kubernetes deployment](kubernetes-deploy
 | Infrastructure | Multipass VMs + kubeadm | VPC + EKS |
 | Postgres / Redis | StatefulSets in-cluster | RDS / ElastiCache |
 | Neo4j | StatefulSet in-cluster | Neo4j Aura (external) |
-| Frontend | nginx pod | S3 + CloudFront |
+| Frontend | nginx pod | nginx pod — the S3 + CloudFront code exists but is disabled, see phase 6 |
 
 The two tracks live side by side on the same branch and never interfere: Gitea only reads `.gitea/workflows/`, GitHub only reads `.github/workflows/`.
 
@@ -70,10 +70,10 @@ It asks the service APIs directly, covers both what OpenTofu manages and what it
 | 3 | RDS Postgres, ElastiCache Redis, Neo4j Aura, Parameter Store |
 | 4 | ECR, EKS cluster and node group |
 | 5 | Application deployment: images, manifests, rollout |
-| 6 | S3 + CloudFront static frontend |
+| 6 | S3 + CloudFront static frontend — **written, left disabled** |
 | 7 | Observability, documentation, final diagram |
 
-API Gateway and Cognito were in the original plan for phase 6 and are not built: reaching the cluster from API Gateway needs a VPC Link, which needs a load balancer, which this account's plan refuses to create. The restriction is documented where it bites, in phases 5 and 6.
+Phase 6 is the one that did not ship. API Gateway and Cognito were dropped first — reaching the cluster from API Gateway needs a VPC Link, which needs a load balancer this plan refuses to create. CloudFront then turned out to need manual account verification, so the code sits behind `var.enable_cdn`, defaulting to `false`. Setting it to `true` on a verified account is all that is missing.
 
 ---
 
@@ -619,3 +619,116 @@ curl -s -o /dev/null -w '%{http_code}\n' "https://${BUCKET}.s3.eu-south-1.amazon
 A 403 there is the Origin Access Control doing its job: the files exist, but only CloudFront may fetch them.
 
 Logging in from the CDN page will fail, and that is the documented limitation rather than a defect — the working demonstration is the forwarded port.
+
+---
+
+## Phase 7 — Observability
+
+Installs Metrics Server and `kube-prometheus-stack` into the cluster, then registers the application with Prometheus.
+
+```
+Actions → AWS — Monitoring → Run workflow
+```
+
+A separate workflow from the application deployment, mirroring how the local track keeps `k8sadmin/` apart from its pipeline. The Helm release changes far less often than the code, and `helm upgrade --wait` takes minutes — running it on every deployment would slow the loop down for nothing.
+
+The two install scripts are **reused unchanged** from the local deployment. They read `KUBECONFIG` and `GRAFANA_PASSWORD` from the environment and know nothing about Multipass, so the same file provisions both clusters — the clearest evidence that the observability layer is genuinely portable.
+
+### The ServiceMonitors finally apply
+
+`k8s/service-monitors.yml` was deliberately skipped in phase 5: it declares `monitoring.coreos.com/v1` objects, whose CRDs arrive with the Helm chart. With the stack installed they apply, and Prometheus starts scraping `/metrics` on `user-manager` and `data-collector` every 15 seconds — the same two instrumented services as locally, through the same manifest.
+
+### Why the node count went from two to three
+
+Memory was never the constraint: the whole stack requests about 640 Mi against more than 2 Gi free. **Pods were.** Each `t3.small` admits 11 — a limit set by network interfaces, not resources — so two nodes give 22, of which 14 were already taken by the application, CoreDNS and the two DaemonSets. The monitoring stack needs 8, which is exactly what was left, with nothing to spare if the scheduler distributed them unevenly.
+
+A third node adds 11 slots and 1.5 Gi for about `$0.024/hour`, bringing the margin to 8 spare slots and 3.1 Gi. It stays inside the 8 vCPU quota even while a rolling update briefly runs a fourth.
+
+This is the one axis of scale the account plan leaves open: `t3.medium` and larger are refused outright, but more `t3.small` are not.
+
+### Grafana's password is generated, not chosen
+
+Like the RDS one, it comes from `random_password` and lands in Parameter Store as a `SecureString`, so no manual parameter has to exist before the first run and nobody handles the value:
+
+```bash
+aws ssm get-parameter --name /flightdata-manager/lab/grafana/password \
+  --with-decryption --query Parameter.Value --output text
+```
+
+### Reaching Grafana
+
+The chart exposes it on a NodePort, which is inert here for the same reason nginx's was: the nodes are private and the plan allows no load balancer. A forwarded port works identically:
+
+```bash
+kubectl -n monitoring port-forward svc/kube-prom-stack-grafana 3001:80
+# http://localhost:3001 — user admin
+```
+
+### Cost
+
+The stack itself is free software on nodes already paid for; the only marginal cost is the third node, about `$0.024/hour`. Total with everything running rises to roughly **`$0.23/hour`**.
+
+---
+
+## What was built, and what the plan blocked
+
+```mermaid
+flowchart TB
+    subgraph ext["External"]
+        aura[("Neo4j Aura")]
+        osky["OpenSky API"]
+    end
+
+    subgraph aws["AWS · eu-south-1"]
+        subgraph vpc["VPC 10.0.0.0/16 · 2 availability zones"]
+            pub["public subnets<br/>NAT Gateway + Elastic IP"]
+            app["private app subnets<br/>EKS · 3 × t3.small<br/>8 application pods + monitoring"]
+            data["private data subnets · no route out<br/>RDS PostgreSQL · ElastiCache Redis"]
+        end
+        ecr[("ECR<br/>5 repositories")]
+        ssm[("Parameter Store<br/>12 runtime values")]
+    end
+
+    dev["Laptop<br/>kubectl port-forward"] -.->|"authenticated tunnel"| app
+    app --> data
+    app -->|"egress"| pub
+    pub --> aura
+    pub -.->|"blocked by OpenSky"| osky
+    ecr --> app
+    ssm --> app
+
+    lb["Load balancer<br/>public entry point"]
+    cdn["CloudFront + S3"]
+    apigw["API Gateway + Cognito"]
+
+    style lb stroke-dasharray: 5 5
+    style cdn stroke-dasharray: 5 5
+    style apigw stroke-dasharray: 5 5
+```
+
+The dashed boxes are the parts of the target architecture that the account plan prevented. Each was confirmed by an explicit error rather than assumed:
+
+| Component | What AWS answered | Verified |
+|---|---|---|
+| `t3.medium` and larger nodes | *not eligible under the Free Plan* | console, instance type selector |
+| Load balancer | `OperationNotPermitted: this AWS account currently does not support creating load balancers` | Kubernetes service controller, then the console on an unrelated VPC |
+| CloudFront | `AccessDenied: your account must be verified before you can add new CloudFront resources` | `tofu apply` |
+| OpenSky from AWS | connection times out, while other hosts answer normally from the same pods | `curl` from inside the cluster |
+
+None of them changed the design: the code for CloudFront is written and sits behind `enable_cdn`, the load balancer is one word away in `aws/k8s/nginx.yml`, and the network already carries the `kubernetes.io/role/elb` tags a load balancer would need. What changed is the demonstration — a forwarded tunnel instead of a public address.
+
+### The two tracks, side by side
+
+| | Local | AWS |
+|---|---|---|
+| Kubernetes | kubeadm on Multipass, built by Ansible | EKS, managed control plane |
+| PostgreSQL, Redis | StatefulSets with hostPath | RDS and ElastiCache |
+| Neo4j | StatefulSet in cluster | Aura, outside the account |
+| Images | imported into containerd with `ctr` | ECR |
+| Secrets | Gitea secrets | Parameter Store |
+| State | file on the host | S3, versioned and locked |
+| Credentials for CI | static SSH keys | OIDC, no stored keys |
+| Entry point | NodePort on the VM address | forwarded port |
+| Observability | `k8sadmin/` scripts | **the same scripts, unchanged** |
+
+The last row is the point. Everything above it is a substitution — a self-managed component swapped for a service the provider runs. The observability layer needed no substitution at all, because it was already speaking Kubernetes rather than speaking to the infrastructure underneath.
