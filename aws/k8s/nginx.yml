@@ -1,20 +1,30 @@
 # AWS variant of k8s/nginx.yml. The Deployment is identical; only the Service
-# changes, from NodePort to LoadBalancer.
+# differs, and not for the reason one would expect.
 #
-# NodePort works locally because the Multipass VMs have addresses reachable from
-# the host. Here the nodes sit in private subnets with no public address, so a
-# node port would be unreachable from anywhere outside the VPC. A LoadBalancer
-# Service makes the AWS cloud controller provision a network load balancer in
-# the public subnets — the ones tagged `kubernetes.io/role/elb` back in phase 2,
-# which is what that tag was for.
+# The natural choice here is `type: LoadBalancer`: the nodes sit in private
+# subnets with no public address, so a NodePort would be unreachable from
+# outside the VPC, and the public subnets were tagged `kubernetes.io/role/elb`
+# in phase 2 precisely so a load balancer could be placed in them.
 #
-# IMPORTANT: this load balancer is created by Kubernetes, not by OpenTofu, so
-# `tofu destroy` neither knows about it nor removes it, and its network
-# interfaces keep the VPC from being deleted. Delete the workloads first:
+# That is not possible on this account. Creating the Service leaves it
+# `<pending>` indefinitely while the service controller retries and fails:
 #
-#   kubectl delete svc --all --all-namespaces
+#   OperationNotPermitted: This AWS account currently does not support
+#   creating load balancers.
 #
-# `pkg/scripts/aws-setup/check-orphans.sh` looks for exactly this.
+# The AWS free plan refuses the CreateLoadBalancer call outright — the same
+# class of restriction that blocks EC2 instance types above t3.small. It is not
+# a tagging or annotation problem, and no configuration change works around it.
+#
+# ClusterIP is therefore the honest choice: it keeps the Service working for
+# everything inside the cluster and avoids a resource that would fail forever.
+# Reaching the application from a laptop is done with a forwarded port:
+#
+#   kubectl -n flight-data port-forward svc/nginx 8443:443
+#   curl -k https://localhost:8443/docs/user
+#
+# Restoring the intended design needs one word — `LoadBalancer` in place of
+# `ClusterIP` — on an account whose plan allows it.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -68,14 +78,8 @@ kind: Service
 metadata:
   name: nginx
   namespace: flight-data
-  annotations:
-    # A network load balancer rather than the classic one the cloud controller
-    # would pick by default: it is cheaper, faster to provision and works at
-    # layer 4, which is all that is needed since nginx terminates TLS itself.
-    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
-    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
 spec:
-  type: LoadBalancer
+  type: ClusterIP
   selector:
     app: nginx
   ports:

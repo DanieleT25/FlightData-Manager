@@ -64,14 +64,16 @@ It asks the service APIs directly, covers both what OpenTofu manages and what it
 
 | Phase | Contents | Billable |
 |---|---|---|
-| **0** | AWS account, OIDC, state bucket, budget alerts | no |
-| 1 | `aws/terraform/` skeleton, `plan`/`apply`/`destroy` workflows | no |
-| 2 | VPC, subnets, Internet Gateway, single NAT Gateway | NAT |
-| 3 | RDS Postgres, ElastiCache Redis, Neo4j Aura, Parameter Store | free tier |
-| 4 | ECR, EKS cluster and node group | EKS + nodes |
-| 5 | Application deployment: images, manifests, load balancer | + load balancer |
-| 6 | S3 + CloudFront frontend, API Gateway, Cognito | low |
-| 7 | Observability, documentation, final diagram | no |
+| **0** | AWS account, OIDC, state bucket, budget alerts |
+| 1 | `aws/terraform/` skeleton, `plan`/`apply`/`destroy` workflows |
+| 2 | VPC, subnets, Internet Gateway, single NAT Gateway |
+| 3 | RDS Postgres, ElastiCache Redis, Neo4j Aura, Parameter Store |
+| 4 | ECR, EKS cluster and node group |
+| 5 | Application deployment: images, manifests, rollout |
+| 6 | S3 + CloudFront static frontend |
+| 7 | Observability, documentation, final diagram |
+
+API Gateway and Cognito were in the original plan for phase 6 and are not built: reaching the cluster from API Gateway needs a VPC Link, which needs a load balancer, which this account's plan refuses to create. The restriction is documented where it bites, in phases 5 and 6.
 
 ---
 
@@ -513,7 +515,15 @@ Everything else — `user-manager`, `data-collector`, `alert-system`, `alert-not
 
 **Why `emptyDir` for Kafka.** Managed nodes are disposable, so a `hostPath` would quietly lose its contents whenever the node group replaced an instance. The alternative, an EBS volume through a `PersistentVolumeClaim`, needs the CSI driver and — worse — creates a volume OpenTofu does not know about, which survives `tofu destroy`, keeps being billed and blocks the VPC from being deleted. The cost of `emptyDir` is that undelivered messages are lost if the pod moves, which is acceptable for a pipeline where messages are produced and consumed within seconds.
 
-**Why `LoadBalancer` for nginx.** The nodes sit in private subnets with no public address, so a node port would be unreachable from outside the VPC. A `LoadBalancer` Service makes the cloud controller provision a network load balancer in the public subnets — the ones tagged `kubernetes.io/role/elb` in phase 2, which is what that tag was for.
+**Why `ClusterIP` for nginx, and not `LoadBalancer`.** The nodes sit in private subnets with no public address, so a node port would be unreachable and a load balancer is the natural answer — the public subnets were tagged `kubernetes.io/role/elb` in phase 2 for exactly that.
+
+It turns out this account cannot have one. Creating the Service leaves it `<pending>` forever while the controller retries:
+
+```
+OperationNotPermitted: This AWS account currently does not support creating load balancers.
+```
+
+The free plan refuses the `CreateLoadBalancer` call outright — the same class of restriction that blocks EC2 instance types above `t3.small`, not a tagging or annotation problem. A `ClusterIP` is therefore the honest configuration: it works for everything inside the cluster and avoids leaving a resource that can only fail. Restoring the intended design is a one-word change on an account whose plan allows it.
 
 ### Where the configuration comes from
 
@@ -523,12 +533,12 @@ The only value coming from GitHub is the OpenSky credential pair, which belongs 
 
 One deliberate difference from the local stack: `POSTGRES_SSLMODE` is `require` rather than `disable`. RDS serves TLS out of the box and the connection crosses subnets.
 
-### The teardown rule becomes mandatory
+### Teardown
 
-The load balancer is created by **Kubernetes**, not by OpenTofu, so `tofu destroy` neither knows about it nor removes it — and its network interfaces stop the VPC from being deleted, leaving a billable resource behind. From this phase on, every session ends with:
+Because no load balancer can be created, nothing outside OpenTofu's knowledge is ever provisioned, and `tofu destroy` is enough on its own. Deleting the workloads first remains good practice rather than a requirement — it costs nothing and keeps the habit for the day a `LoadBalancer` Service does get created:
 
 ```bash
-kubectl delete svc --all --all-namespaces   # first
+kubectl delete svc --all -n flight-data     # precautionary
 # then the AWS — Destroy workflow
 bash pkg/scripts/aws-setup/check-orphans.sh # confirms
 ```
@@ -541,12 +551,71 @@ It does not prevent the deployment. `data-collector` only calls OpenSky once a u
 
 ### Verify
 
-The run summary prints the pod list and the load balancer address. From a laptop:
+The run summary prints the pod list. From a laptop, reach the application through a forwarded port:
 
 ```bash
-kubectl -n flight-data get pods -o wide
-LB=$(kubectl -n flight-data get svc nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-curl -k "https://${LB}/docs/user"
+aws eks update-kubeconfig --name flightdata-manager-lab --region eu-south-1
+kubectl -n flight-data port-forward svc/nginx 8443:443 &
+curl -k https://localhost:8443/docs/user
 ```
 
-The certificate is self-signed by `gen_certs.sh`, hence `-k`. The load balancer needs two or three minutes after the rollout before it answers.
+The certificate is self-signed by `gen_certs.sh`, hence `-k`.
+
+The test that actually proves the deployment works is registering a user twice with the same `X-Request-ID`: the first call writes to RDS, the second returns the response cached in ElastiCache. The two are distinguishable in the payload — `registered_at` keeps nanosecond precision when it comes from the cache and is truncated to microseconds when it is read back from PostgreSQL, which is direct evidence that both stores are doing their job.
+
+---
+
+## Phase 6 — Static frontend on S3 and CloudFront
+
+The Svelte application is a Vite build: a few hundred kilobytes of HTML, CSS and JavaScript with no server-side logic. Serving it from a container means paying for compute to hand out files, so it also goes to a bucket behind a CDN — the `Frontend: S3 + CloudFront` row of the target architecture.
+
+Eight resources: a bucket with its public-access block and policy, an Origin Access Control, the distribution, and two Parameter Store entries the deploy workflow reads.
+
+### The bucket is never public
+
+Files are reachable only through the distribution, using an **Origin Access Control**: CloudFront signs its requests to S3, and the bucket policy accepts `s3:GetObject` from the CloudFront service principal *only when the request comes from this distribution's ARN*. No other distribution, in this account or anyone else's, can read it.
+
+That is worth more than convenience. Because the bucket has no public path, the HTTPS redirect and the caching cannot be bypassed by addressing S3 directly — a plain public bucket would leave that door open.
+
+### Single-page routing
+
+A client-routed application has no object at `/login` or `/dashboard`, so S3 answers 403 or 404 and a reload or a shared link breaks. The distribution maps both codes to `/index.html` with a 200, letting the application resolve the route itself.
+
+### Why the frontend also stays in the cluster
+
+Not an oversight. The Svelte code calls its API with **relative paths** — `fetch('/api/interests')` — which resolve against the origin the page was loaded from. Behind nginx, frontend and API share one origin and it works. Loaded from CloudFront, the same call reaches the CDN, which knows only about the bucket.
+
+Fixing that means giving the API a public address to use as a second origin, which needs a load balancer. This account cannot create one — verified twice, from the Kubernetes service controller and again from the console on an unrelated VPC:
+
+```
+OperationNotPermittedException: This AWS account currently does not support creating load balancers.
+```
+
+So there are two frontends on purpose, each demonstrating a different thing: the one behind nginx is the path that actually works end to end, reachable through a forwarded port; the one on CloudFront shows the CDN tier of the architecture and renders correctly, but its API calls cannot reach the cluster.
+
+### Cost
+
+| Resource | Cost |
+|---|---|
+| S3 storage | ~160 KB against a 5 GB free tier |
+| CloudFront | free tier covers 1 TB egress and 10 M requests per month |
+| Distribution itself | no hourly charge — only usage |
+
+Effectively zero. **The teardown, however, gets noticeably slower**: a distribution has to be disabled and the change propagated to the edge locations before it can be deleted, which OpenTofu does automatically but which adds ten to fifteen minutes to every `destroy`. Worth knowing before starting a short session.
+
+### Verify
+
+```bash
+tofu -chdir=aws/terraform output frontend_url
+```
+
+Opening it should show the interface, served over HTTPS from the nearest edge location. Confirm the bucket is not reachable directly — this must fail:
+
+```bash
+BUCKET=$(aws ssm get-parameter --name /flightdata-manager/lab/frontend/bucket --query 'Parameter.Value' --output text)
+curl -s -o /dev/null -w '%{http_code}\n' "https://${BUCKET}.s3.eu-south-1.amazonaws.com/index.html"   # expect 403
+```
+
+A 403 there is the Origin Access Control doing its job: the files exist, but only CloudFront may fetch them.
+
+Logging in from the CDN page will fail, and that is the documented limitation rather than a defect — the working demonstration is the forwarded port.

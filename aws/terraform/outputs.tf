@@ -60,6 +60,11 @@ output "ssm_parameter_prefix" {
   value       = local.ssm_prefix
 }
 
+output "frontend_url" {
+  description = "Public address of the static frontend — the interface renders, but its API calls need a load balancer this account cannot create"
+  value       = "https://${aws_cloudfront_distribution.frontend.domain_name}"
+}
+
 output "cluster_name" {
   description = "EKS cluster name — feed it to: aws eks update-kubeconfig --name <this> --region eu-south-1"
   value       = aws_eks_cluster.main.name

@@ -170,6 +170,30 @@ jobs:
           done
           kubectl -n "$NAMESPACE" rollout restart deployment/nginx
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # The same Vite build that goes into the frontend container is also
+      # uploaded to S3, so the CDN and the in-cluster copy never diverge.
+      - name: Publish the frontend to the CDN
+        run: |
+          set -euo pipefail
+          param() { aws ssm get-parameter --name "/flightdata-manager/lab/$1" --query 'Parameter.Value' --output text; }
+          BUCKET=$(param frontend/bucket)
+          DIST=$(param frontend/distribution)
+
+          npm --prefix frontend ci
+          npm --prefix frontend run build
+
+          # --delete removes objects left by a previous build, so a renamed
+          # hashed asset does not linger and quietly get served.
+          aws s3 sync frontend/dist "s3://${BUCKET}/" --delete
+
+          # Without this, edge locations keep serving the previous index.html
+          # for as long as its cache entry lives.
+          aws cloudfront create-invalidation --distribution-id "$DIST" --paths '/*' > /dev/null
+
       - name: Wait for the rollout
         run: |
           set -euo pipefail
@@ -178,7 +202,10 @@ jobs:
             kubectl -n "$NAMESPACE" rollout status "deployment/${D}" --timeout=5m
           done
 
-      - name: Publish the entry point
+      # There is no public entry point to print: this account's plan refuses to
+      # create load balancers, so the Service is a ClusterIP and the application
+      # is reached through a forwarded port. See the comment in aws/k8s/nginx.yml.
+      - name: Publish how to reach the application
         run: |
           set -euo pipefail
           {
@@ -186,22 +213,11 @@ jobs:
             echo '```'
             kubectl -n "$NAMESPACE" get pods -o wide
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          # The load balancer takes a couple of minutes to get a name.
-          for _ in $(seq 1 30); do
-            LB=$(kubectl -n "$NAMESPACE" get svc nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
-            [ -n "$LB" ] && break
-            sleep 10
-          done
-
-          {
-            echo '### Entry point'
-            echo "https://${LB:-<still provisioning>}/docs/user"
-            echo ''
-            echo 'Before destroying the infrastructure, delete the workloads —'
-            echo 'this load balancer belongs to Kubernetes, not to OpenTofu:'
-            echo '```'
-            echo 'kubectl delete svc --all --all-namespaces'
+            echo '### Reaching the application'
+            echo 'The free plan does not allow load balancers, so the entry point is a forwarded port:'
+            echo '```bash'
+            echo "aws eks update-kubeconfig --name ${CLUSTER} --region ${AWS_REGION}"
+            echo "kubectl -n ${NAMESPACE} port-forward svc/nginx 8443:443"
+            echo 'curl -k https://localhost:8443/docs/user'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
