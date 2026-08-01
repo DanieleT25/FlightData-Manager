@@ -672,42 +672,6 @@ The stack itself is free software on nodes already paid for; the only marginal c
 
 ## What was built, and what the plan blocked
 
-```mermaid
-flowchart TB
-    subgraph ext["External"]
-        aura[("Neo4j Aura")]
-        osky["OpenSky API"]
-    end
-
-    subgraph aws["AWS · eu-south-1"]
-        subgraph vpc["VPC 10.0.0.0/16 · 2 availability zones"]
-            pub["public subnets<br/>NAT Gateway + Elastic IP"]
-            app["private app subnets<br/>EKS · 3 × t3.small<br/>8 application pods + monitoring"]
-            data["private data subnets · no route out<br/>RDS PostgreSQL · ElastiCache Redis"]
-        end
-        ecr[("ECR<br/>5 repositories")]
-        ssm[("Parameter Store<br/>12 runtime values")]
-    end
-
-    dev["Laptop<br/>kubectl port-forward"] -.->|"authenticated tunnel"| app
-    app --> data
-    app -->|"egress"| pub
-    pub --> aura
-    pub -.->|"blocked by OpenSky"| osky
-    ecr --> app
-    ssm --> app
-
-    lb["Load balancer<br/>public entry point"]
-    cdn["CloudFront + S3"]
-    apigw["API Gateway + Cognito"]
-
-    style lb stroke-dasharray: 5 5
-    style cdn stroke-dasharray: 5 5
-    style apigw stroke-dasharray: 5 5
-```
-
-The dashed boxes are the parts of the target architecture that the account plan prevented. Each was confirmed by an explicit error rather than assumed:
-
 | Component | What AWS answered | Verified |
 |---|---|---|
 | `t3.medium` and larger nodes | *not eligible under the Free Plan* | console, instance type selector |
