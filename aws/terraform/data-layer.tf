@@ -86,12 +86,14 @@ resource "aws_db_instance" "postgres" {
   vpc_security_group_ids = [aws_security_group.postgres.id]
   publicly_accessible    = false
 
-  # The reference diagram shows RDS in both zones, which denotes a Multi-AZ
-  # deployment: one database with a standby, not two databases. It is disabled
-  # here because the free tier does not cover the standby, the same trade-off
-  # already accepted for the shared NAT Gateway. Setting this to true is all it
-  # takes to restore the diagram's design.
-  multi_az = false
+  # One database with a synchronous standby in the second zone, which is what
+  # the reference diagram means by drawing RDS twice — not two databases. AWS
+  # keeps the standby in step, fails over to it automatically in a minute or
+  # two, and the application keeps using the same endpoint throughout.
+  #
+  # The free tier does not cover the standby, so this roughly doubles the RDS
+  # cost. Worth it here because the environment only runs for minutes at a time.
+  multi_az = true
 
   # This environment is created and destroyed repeatedly, so retaining backups
   # would only add storage cost and slow every teardown down. A final snapshot
@@ -118,17 +120,31 @@ resource "aws_elasticache_subnet_group" "redis" {
   tags = { Name = "${local.name}-redis" }
 }
 
-# A single node, which is what the free tier covers. AUTH and encryption in
-# transit would require a replication group and a larger node type, so access is
-# controlled by the security group and by the subnet having no route out — the
-# same posture as the in-cluster Redis of the local deployment.
-resource "aws_elasticache_cluster" "redis" {
-  cluster_id           = "${local.name}-redis"
+# A replication group rather than a standalone cluster, because a single
+# `aws_elasticache_cluster` node cannot span availability zones. Two nodes — a
+# primary and a replica in the other zone — with automatic failover, which is
+# what the reference diagram means by drawing ElastiCache in both zones.
+#
+# The application keeps writing to one address: `primary_endpoint_address`
+# follows whichever node currently holds that role, so a failover needs no
+# change on the client side.
+#
+# AUTH and encryption in transit stay off, as in the local deployment: access is
+# controlled by the security group and by the subnet having no route out.
+resource "aws_elasticache_replication_group" "redis" {
+  replication_group_id = "${local.name}-redis"
+  description          = "Idempotency keys for user-manager"
+
   engine               = "redis"
   node_type            = var.redis_node_type
-  num_cache_nodes      = 1
   parameter_group_name = "default.redis7"
   port                 = 6379
+
+  # Two cache clusters means one primary plus one replica; automatic failover
+  # needs at least two, and multi-AZ needs automatic failover.
+  num_cache_clusters         = 2
+  automatic_failover_enabled = true
+  multi_az_enabled           = true
 
   subnet_group_name  = aws_elasticache_subnet_group.redis.name
   security_group_ids = [aws_security_group.redis.id]
@@ -175,14 +191,17 @@ resource "aws_ssm_parameter" "postgres_password" {
   value = random_password.postgres.result
 }
 
+# The primary endpoint, not a node address: it follows the current primary
+# across a failover, so the application never has to be told the topology
+# changed.
 resource "aws_ssm_parameter" "redis_host" {
   name  = "${local.ssm_prefix}/redis/host"
   type  = "String"
-  value = aws_elasticache_cluster.redis.cache_nodes[0].address
+  value = aws_elasticache_replication_group.redis.primary_endpoint_address
 }
 
 resource "aws_ssm_parameter" "redis_port" {
   name  = "${local.ssm_prefix}/redis/port"
   type  = "String"
-  value = tostring(aws_elasticache_cluster.redis.cache_nodes[0].port)
+  value = tostring(aws_elasticache_replication_group.redis.port)
 }

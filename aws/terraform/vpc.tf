@@ -1,16 +1,16 @@
 # Network layer: two availability zones, three subnet tiers per zone.
 #
-#   public       Internet Gateway route. Holds the NAT Gateway and, later, the
-#                public load balancer.
-#   private app  Egress through the NAT Gateway. Will host the EKS nodes.
-#   private data ---. No route to the internet at all. Will host RDS and
-#                ElastiCache, which never need to reach out.
+#   public       Internet Gateway route. Holds that zone's NAT Gateway.
+#   private app  Egress through its own zone's NAT Gateway. Hosts the EKS nodes.
+#   private data No route to the internet at all. Hosts RDS and ElastiCache,
+#                which never need to reach out.
 #
-# Both zones share a single NAT Gateway, in the first zone. This is a deliberate
-# cost decision: a NAT Gateway costs about $0.045/hour, so one per zone would
-# double the standing cost of the whole project. The trade-off is that an outage
-# of the first zone also cuts egress for the second one — acceptable for a lab,
-# not for production, where each zone gets its own.
+# Every zone is self-sufficient: its own NAT Gateway, its own route table, its
+# own database node. An earlier revision shared a single gateway between the two
+# to save about $0.05/hour, which made the second zone depend on the first for
+# egress — redundancy that only worked in one direction. Since this environment
+# is created for minutes at a time, the hourly saving was worth less than an
+# architecture that is symmetric and can actually survive losing either zone.
 
 locals {
   azs = slice(data.aws_availability_zones.available.names, 0, var.az_count)
@@ -77,25 +77,29 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# ── Shared NAT Gateway ────────────────────────────────────────────────────────
+# ── NAT Gateway, one per zone ─────────────────────────────────────────────────
 
 # Since February 2024 every public IPv4 address is billed, including one that is
-# attached, so this address adds roughly $0.005/hour on top of the gateway.
+# attached, so each of these adds roughly $0.005/hour on top of its gateway.
 resource "aws_eip" "nat" {
+  for_each = aws_subnet.public
+
   domain = "vpc"
 
-  tags = { Name = "${local.name}-nat-eip" }
+  tags = { Name = "${local.name}-nat-eip-${each.key}" }
 }
 
 resource "aws_nat_gateway" "main" {
-  allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public[local.azs[0]].id
+  for_each = aws_subnet.public
+
+  allocation_id = aws_eip.nat[each.key].id
+  subnet_id     = each.value.id
 
   # The gateway is useless until the Internet Gateway exists, and OpenTofu
   # cannot infer that from the arguments alone.
   depends_on = [aws_internet_gateway.main]
 
-  tags = { Name = "${local.name}-nat" }
+  tags = { Name = "${local.name}-nat-${each.key}" }
 }
 
 # ── Private application tier ──────────────────────────────────────────────────
@@ -115,24 +119,28 @@ resource "aws_subnet" "app" {
   }
 }
 
-# One shared route table: every application subnet reaches the internet through
-# the single NAT Gateway, whichever zone it sits in.
+# One route table per zone, each pointing at the gateway in its own zone. This
+# is what makes the zones independent: traffic leaving a node never crosses into
+# the other availability zone, and losing one zone does not take egress away
+# from the other.
 resource "aws_route_table" "app" {
+  for_each = local.app_subnets
+
   vpc_id = aws_vpc.main.id
 
   route {
     cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.main.id
+    nat_gateway_id = aws_nat_gateway.main[each.key].id
   }
 
-  tags = { Name = "${local.name}-app" }
+  tags = { Name = "${local.name}-app-${each.key}" }
 }
 
 resource "aws_route_table_association" "app" {
   for_each = aws_subnet.app
 
   subnet_id      = each.value.id
-  route_table_id = aws_route_table.app.id
+  route_table_id = aws_route_table.app[each.key].id
 }
 
 # ── Private data tier ─────────────────────────────────────────────────────────
@@ -177,10 +185,11 @@ resource "aws_vpc_endpoint" "s3" {
   service_name      = "com.amazonaws.${var.aws_region}.s3"
   vpc_endpoint_type = "Gateway"
 
-  route_table_ids = [
-    aws_route_table.app.id,
-    aws_route_table.data.id,
-  ]
+  # Both application route tables — one per zone — plus the data one.
+  route_table_ids = concat(
+    [for rt in aws_route_table.app : rt.id],
+    [aws_route_table.data.id],
+  )
 
   tags = { Name = "${local.name}-s3" }
 }

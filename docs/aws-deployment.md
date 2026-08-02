@@ -21,17 +21,21 @@ The AWS free plan grants a fixed credit (typically $100, up to $200 after comple
 - **Nothing is blocked.** Services outside the always-free tier — EKS control plane, NAT Gateway — bill normally; the charge is silently deducted from the credit instead of the card.
 - **When the credit runs out the account is closed**, unless it was upgraded to the paid plan first, in which case billing continues on the card.
 
-Cost is therefore a function of *uptime*, not of the architecture. Approximate hourly rates, single-AZ:
+Cost is therefore a function of *uptime*, not of the architecture. Approximate hourly rates:
 
 | Resource | ~USD/hour |
 |---|---|
 | EKS control plane | 0.10 |
-| NAT Gateway | 0.045 |
-| 2 × `t3.small` worker nodes | 0.042 |
-| RDS + ElastiCache (`micro`, free tier) | ~0 |
-| **Total** | **~0.19** |
+| 2 × NAT Gateway, one per zone | 0.09 |
+| 2 public IPv4 addresses | 0.01 |
+| 3 × `t3.small` worker nodes | 0.072 |
+| RDS Multi-AZ (`db.t4g.micro`) | ~0.036 |
+| ElastiCache, primary + replica | ~0.038 |
+| **Total** | **~0.35** |
 
-That is roughly **$4.50 per day left running**, against **~$0.60 for a three-hour working session** followed by a destroy. The credit covers hundreds of hours of deliberate use, and about six weeks of forgetting.
+Roughly **$8 per day left running**, against about **$1 for a three-hour session** followed by a destroy.
+
+An earlier revision halved that by sharing one NAT Gateway between the zones and running single-instance databases, which fitted the free tier. It was abandoned deliberately: the saving mattered less than an architecture whose two zones are actually independent, given that this environment exists for minutes at a time.
 
 Two consequences shape the phases below: the budget alarm is created *before* any billable resource, and the destroy workflow is written *before* the deploy workflow.
 
@@ -66,7 +70,7 @@ It asks the service APIs directly, covers both what OpenTofu manages and what it
 |---|---|---|
 | **0** | AWS account, OIDC, state bucket, budget alerts |
 | 1 | `aws/terraform/` skeleton, `plan`/`apply`/`destroy` workflows |
-| 2 | VPC, subnets, Internet Gateway, single NAT Gateway |
+| 2 | VPC, subnets, Internet Gateway, one NAT Gateway per zone |
 | 3 | RDS Postgres, ElastiCache Redis, Neo4j Aura, Parameter Store |
 | 4 | ECR, EKS cluster and node group |
 | 5 | Application deployment: images, manifests, rollout |
@@ -270,11 +274,13 @@ The application tier is a `/20` because the EKS VPC CNI gives every *pod* a real
 
 The data tier has no default route at all: those databases are reachable from inside the VPC and can reach nothing outside it. It is one less path to worry about, and it keeps database traffic off the NAT Gateway.
 
-### The shared NAT Gateway
+### One NAT Gateway per zone
 
-A NAT Gateway costs about `$0.045/hour` plus `$0.045/GB` processed, and since February 2024 its public IPv4 address adds about `$0.005/hour`. One per zone — the textbook layout — would double that standing cost for the whole life of the project.
+Each zone has its own gateway and its own application route table pointing at it, so traffic leaving a node never crosses into the other zone and losing one zone does not take egress away from the other.
 
-Both zones therefore share a single gateway, placed in the first zone. The consequence is explicit: **an outage of the first zone also cuts outbound traffic for the second one**. Zone redundancy still protects the compute and database tiers, but not egress. In production each zone gets its own gateway; here the saving is worth more than the redundancy.
+An earlier revision shared a single gateway between both zones to save about `$0.05/hour`. It worked, and it left an asymmetry worth naming: the second zone depended on the first for egress, so an outage of the first stopped everything while an outage of the second was survivable. Redundancy in one direction only.
+
+That trade was reversed once it became clear the environment runs for minutes at a time rather than continuously — the hourly saving is worth less than a topology that is symmetric and explicable. A gateway costs about `$0.045/hour` plus `$0.045/GB` processed, and its public IPv4 address adds about `$0.005/hour`.
 
 ### S3 gateway endpoint
 
@@ -284,16 +290,16 @@ Free, and it removes a recurring charge: container image layers pulled from ECR 
 
 | Resource | ~USD/hour |
 |---|---|
-| NAT Gateway | 0.045 |
-| Public IPv4 of the NAT Gateway | 0.005 |
+| 2 × NAT Gateway | 0.09 |
+| 2 × public IPv4 address | 0.01 |
 | VPC, subnets, route tables, Internet Gateway, S3 endpoint | free |
-| **Total** | **~0.05** |
+| **Total** | **~0.10** |
 
-About `$1.20` per day if left running, `$0.15` for a three-hour session.
+About `$2.40` per day if left running, `$0.30` for a three-hour session.
 
 ### Verify
 
-After `apply`, the outputs list the VPC, the three subnet groups and the NAT address. From the console, **VPC → Resource map** draws the whole topology: it should show two zones, six subnets, and every private subnet routed to the same gateway.
+After `apply`, the outputs list the VPC, the three subnet groups and one NAT address per zone. From the console, **VPC → Resource map** draws the whole topology: it should show two zones, six subnets, and each application subnet routed to the gateway in its own zone — four route tables in total, not three.
 
 ```bash
 aws ec2 describe-subnets --region eu-south-1 \
@@ -347,34 +353,28 @@ The RDS master password is different: OpenTofu generates it, which means it **is
 
 Parameter Store rather than Secrets Manager: both would work, but Secrets Manager costs $0.40 per secret per month while the standard tier of Parameter Store is free, and the only feature lost — automatic rotation — is not used here.
 
-### Free-tier sizing
+### Sizing
 
 | Setting | Value | Reason |
 |---|---|---|
-| RDS class | `db.t4g.micro` | free tier, 750 h/month |
-| RDS storage | 20 GB `gp2` | free tier limit |
-| Multi-AZ | off | not covered by the free tier |
+| RDS class | `db.t4g.micro` | smallest that runs PostgreSQL 16 |
+| RDS storage | 20 GB `gp2` | more than the schema will ever need here |
+| **RDS Multi-AZ** | **on** | a synchronous standby in the second zone, with automatic failover |
 | Backup retention | 0 days | the environment is destroyed after every session; backups would only add storage cost and slow the teardown |
 | Final snapshot | skipped | otherwise every destroy leaves a billable snapshot behind |
-| ElastiCache | `cache.t3.micro`, 1 node | free tier |
-| Redis AUTH | off | needs a replication group and a larger node; access is restricted by the security group and by the subnet having no route out |
+| **ElastiCache** | **replication group, 2 nodes** | primary and replica in different zones, automatic failover |
+| Redis AUTH | off | access is restricted by the security group and by the subnet having no route out, as in the local deployment |
 
-If the free tier does not apply, the two engines together add roughly `$0.04/hour`, taking the total to about `$0.09/hour`. Check `Billing → Cost Explorer` after the first session to see which case applies to this account.
+Both engines are highly available, which the free tier does not cover: together they cost roughly `$0.074/hour`. That is the deliberate trade described in the cost model — this environment runs for minutes, so symmetry between the zones is worth more than fitting inside the free tier.
 
-### Divergence from the target architecture
+### What Multi-AZ actually means here
 
-The reference diagram in `schema/` draws RDS and ElastiCache in **both** availability zones. That notation does not mean two independent databases: it depicts a Multi-AZ deployment — one logical database with a standby replica in the second zone, behind a single endpoint — and, for Redis, a replication group with a primary and a replica.
+The reference diagram draws RDS and ElastiCache in **both** zones. That notation never meant two independent databases, and the implementation matches it precisely:
 
-This deployment runs **one instance of each** instead, for the same reason the two zones share one NAT Gateway: the free tier covers neither an RDS standby nor a second cache node, so high availability would cost about `$0.072/hour` where the current setup costs nothing.
+- **RDS** keeps one logical database with a synchronous standby in the other zone, behind a **single endpoint**. The application is unaware a failover happened.
+- **ElastiCache** needs a different resource for this: `aws_elasticache_replication_group` rather than `aws_elasticache_cluster`, because a standalone cache node cannot span zones. Two nodes, a primary and a replica, with `automatic_failover_enabled`.
 
-What is actually given up: if the first availability zone fails, the database and the cache become unavailable until AWS restores it, whereas a Multi-AZ deployment would fail over automatically in a minute or two. Data itself is not at risk — RDS storage is replicated inside the zone, and the Redis contents are idempotency keys that regenerate on their own.
-
-Restoring the diagram's design is deliberately kept cheap:
-
-- **RDS** — set `multi_az = true`. One line, and AWS builds the standby on the next apply.
-- **Redis** — replace `aws_elasticache_cluster` with `aws_elasticache_replication_group`, which is a different resource with a different schema, and add a replica in the second zone.
-
-The zone-redundant part of the network — six subnets across two zones — is already in place, so nothing else would need to change.
+One consequence shapes the configuration: the Redis address published to Parameter Store is `primary_endpoint_address`, not a node address. That endpoint follows whichever node currently holds the primary role, so a failover requires no change on the client side — pointing at a node address would break the moment the roles swapped.
 
 ### Expect a slow apply
 
@@ -666,11 +666,13 @@ kubectl -n monitoring port-forward svc/kube-prom-stack-grafana 3001:80
 
 ### Cost
 
-The stack itself is free software on nodes already paid for; the only marginal cost is the third node, about `$0.024/hour`. Total with everything running rises to roughly **`$0.23/hour`**.
+The stack itself is free software on nodes already paid for; the only marginal cost is the third node, about `$0.024/hour`. Total with everything running is roughly **`$0.35/hour`**.
 
 ---
 
 ## What was built, and what the plan blocked
+
+These are restrictions, not choices. Multi-AZ on RDS and ElastiCache was on this list in an earlier revision as a cost decision; it is now built.
 
 | Component | What AWS answered | Verified |
 |---|---|---|

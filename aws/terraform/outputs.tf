@@ -37,9 +37,9 @@ output "data_subnet_ids" {
   value       = [for s in aws_subnet.data : s.id]
 }
 
-output "nat_public_ip" {
-  description = "Address every outbound connection from the private subnets appears to come from"
-  value       = aws_eip.nat.public_ip
+output "nat_public_ips" {
+  description = "One address per zone — outbound traffic from a node appears to come from its own zone's gateway"
+  value       = { for az, eip in aws_eip.nat : az => eip.public_ip }
 }
 
 # Endpoints are printed, credentials are not: the workflow summary is public.
@@ -51,8 +51,8 @@ output "postgres_endpoint" {
 }
 
 output "redis_endpoint" {
-  description = "Redis endpoint, reachable only from inside the VPC"
-  value       = "${aws_elasticache_cluster.redis.cache_nodes[0].address}:${aws_elasticache_cluster.redis.cache_nodes[0].port}"
+  description = "Redis primary endpoint, reachable only from inside the VPC — follows the current primary across a failover"
+  value       = "${aws_elasticache_replication_group.redis.primary_endpoint_address}:${aws_elasticache_replication_group.redis.port}"
 }
 
 output "ssm_parameter_prefix" {
