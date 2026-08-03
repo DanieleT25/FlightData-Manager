@@ -67,7 +67,7 @@ It asks the service APIs directly, covers both what OpenTofu manages and what it
 ## Phases
 
 | Phase | Contents |
-|---|---|---|
+|---|---|
 | **0** | AWS account, OIDC, state bucket, budget alerts |
 | 1 | `aws/terraform/` skeleton, `plan`/`apply`/`destroy` workflows |
 | 2 | VPC, subnets, Internet Gateway, one NAT Gateway per zone |
